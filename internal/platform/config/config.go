@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -35,6 +36,11 @@ type Config struct {
 	// gateway: Kafka consumer group name (one per region).
 	KafkaConsumerGroup string
 
+	// gateway: number of per-channel shards Fanout spreads concurrent
+	// delivery across (see internal/realtime/channel_shard_pool.go). <= 0
+	// (including unset) falls back to Fanout's own default.
+	FanoutShards int
+
 	// worker: which physical shard this instance publishes the outbox for.
 	ShardID  string
 	ShardDSN string
@@ -59,6 +65,10 @@ func Load() (Config, error) {
 
 	if brokers := os.Getenv("KAFKA_BROKERS"); brokers != "" {
 		c.KafkaBrokers = strings.Split(brokers, ",")
+	}
+
+	if n, err := strconv.Atoi(os.Getenv("FANOUT_SHARDS")); err == nil {
+		c.FanoutShards = n
 	}
 
 	// :3000 is the demo/ chat test harness, :3001 is the dashboard/ app.
