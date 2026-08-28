@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/darkoatanasovski/chat/internal/blocks"
 	"github.com/darkoatanasovski/chat/internal/events"
 	"github.com/darkoatanasovski/chat/internal/membership"
 	"github.com/darkoatanasovski/chat/internal/platform/auth"
@@ -78,9 +79,11 @@ func main() {
 	// shares one group.
 	dedup := realtime.NewDedup(redisClient, cfg.KafkaConsumerGroup, m)
 	membershipRepo := membership.NewRepo(controlPool)
+	blocksRepo := blocks.NewRepo(controlPool)
+	blocksCache := realtime.NewBlocksCache(redisClient, m)
 	publisher := realtime.NewPublisher(redisClient, m)
 
-	delivery := realtime.NewDelivery(hub, cache, membershipRepo, registry, publisher, log)
+	delivery := realtime.NewDelivery(hub, cache, membershipRepo, blocksCache, blocksRepo, registry, publisher, log)
 
 	consumerTopics := []string{events.TopicMessageCreated, events.TopicReactionUpdated, events.TopicReadUpdated}
 	consumer := kafkastorage.NewConsumer(cfg.KafkaBrokers, consumerTopics, cfg.KafkaConsumerGroup)

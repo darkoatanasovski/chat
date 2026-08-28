@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/darkoatanasovski/chat/internal/apps"
+	"github.com/darkoatanasovski/chat/internal/blocks"
 	"github.com/darkoatanasovski/chat/internal/channels"
 	"github.com/darkoatanasovski/chat/internal/membership"
 	"github.com/darkoatanasovski/chat/internal/messages"
@@ -108,7 +109,9 @@ func buildTestApp() (*App, error) {
 		messagesRepo:    messages.NewRepo(),
 		reactionsRepo:   reactions.NewRepo(),
 		readStateRepo:   readstate.NewRepo(),
+		blocksRepo:      blocks.NewRepo(controlPool),
 		membershipCache: realtime.NewMembershipCache(redisClient, m),
+		blocksCache:     realtime.NewBlocksCache(redisClient, m),
 		peerClient:      newPeerClient(),
 	}, nil
 }

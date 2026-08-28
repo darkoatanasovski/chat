@@ -279,7 +279,7 @@ func (f *Fanout) handleMessageCreated(ctx context.Context, msg kafkago.Message) 
 		return fmt.Errorf("fanout: marshal delivery frame: %w", err)
 	}
 
-	if err := f.delivery.ToChannelMembers(ctx, payload.ChannelID, frame, uuid.Nil); err != nil {
+	if err := f.delivery.ToChannelMembers(ctx, payload.ChannelID, frame, payload.SenderID, uuid.Nil); err != nil {
 		return err
 	}
 
@@ -317,7 +317,7 @@ func (f *Fanout) handleReactionUpdated(ctx context.Context, msg kafkago.Message)
 		return fmt.Errorf("fanout: marshal reaction delivery frame: %w", err)
 	}
 
-	return f.delivery.ToChannelMembers(ctx, payload.ChannelID, frame, uuid.Nil)
+	return f.delivery.ToChannelMembers(ctx, payload.ChannelID, frame, payload.ActorID, uuid.Nil)
 }
 
 func (f *Fanout) handleReadUpdated(ctx context.Context, msg kafkago.Message) error {
@@ -344,5 +344,5 @@ func (f *Fanout) handleReadUpdated(ctx context.Context, msg kafkago.Message) err
 		return fmt.Errorf("fanout: marshal read delivery frame: %w", err)
 	}
 
-	return f.delivery.ToChannelMembers(ctx, payload.ChannelID, frame, uuid.Nil)
+	return f.delivery.ToChannelMembers(ctx, payload.ChannelID, frame, payload.UserID, uuid.Nil)
 }

@@ -207,9 +207,20 @@ func (a *App) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A caller never sees a message from anyone they have any block
+	// relationship with — matches the realtime delivery filter
+	// (internal/realtime.Delivery.ToChannelMembers) so history and live
+	// delivery agree on who "can't communicate" with whom.
+	blockedWith, err := a.blocksRepo.BlockedPairsFor(r.Context(), identity.UserID)
+	if err != nil {
+		a.log.Error("resolve blocked users", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to list messages")
+		return
+	}
+
 	var rows []messageRow
 	err = a.metrics.TimePostgres("list_messages", func() error {
-		msgs, listErr := a.messagesRepo.ListBefore(r.Context(), pool, channelID, before, limit)
+		msgs, listErr := a.messagesRepo.ListBefore(r.Context(), pool, channelID, before, limit, blockedWith)
 		rows = make([]messageRow, len(msgs))
 		for i, m := range msgs {
 			rows[i] = messageRow(m)
