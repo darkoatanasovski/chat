@@ -9,6 +9,8 @@ x-common-env: &common-env
   SHARD_A_DSN: ${SHARD_A_DSN}
   SHARD_B_DSN: ${SHARD_B_DSN}
   VALKEY_ADDR: ${VALKEY_ADDR}
+  VALKEY_SENTINEL_ADDRS: ${VALKEY_SENTINEL_ADDRS}
+  VALKEY_MASTER_NAME: ${VALKEY_MASTER_NAME}
   KAFKA_BROKERS: ${KAFKA_BROKERS}
   AUTH_SECRET: ${AUTH_SECRET}
   SHARDS_CONFIG: /etc/chat/shards.yaml
@@ -94,9 +96,49 @@ services:
       KAFKA_NUM_PARTITIONS: "6"
       CLUSTER_ID: "Q2hhdFBsYXRmb3JtS1JhZnQx"
 
+  # Sentinel-managed primary/replica pair (INSTRUCTIONS.md's Redis-HA
+  # follow-up): api/gateway connect through Sentinel
+  # (VALKEY_SENTINEL_ADDRS), not directly to "valkey", so a primary failure
+  # promotes valkey-replica and every already-connected client's go-redis
+  # FailoverClient picks up the new primary on its own — no process
+  # restart. "valkey" remains a container/service name, not a guarantee of
+  # which physical role currently holds it; ask Sentinel, never assume.
   valkey:
     image: valkey/valkey:7.2-alpine
     ports: ["6379:6379"]
+
+  valkey-replica:
+    image: valkey/valkey:7.2-alpine
+    command: valkey-server --replicaof valkey 6379
+    depends_on: [valkey]
+
+  # Three Sentinels for majority quorum (quorum=2, set in
+  # deploy/sentinel/*.conf) — a single Sentinel would itself be a new
+  # single point of failure for failover detection, defeating the purpose.
+  # Each gets its own config file, not a shared one: Sentinel rewrites its
+  # config at runtime to persist state (known replicas, epoch), so three
+  # instances sharing one bind-mounted file would corrupt each other's
+  # writes.
+  valkey-sentinel-1:
+    image: valkey/valkey:7.2-alpine
+    depends_on: [valkey, valkey-replica]
+    command: valkey-sentinel /etc/valkey/sentinel.conf
+    volumes: ["../deploy/sentinel/sentinel-1.conf:/etc/valkey/sentinel.conf"]
+    ports: ["26379:26379"]
+
+  valkey-sentinel-2:
+    image: valkey/valkey:7.2-alpine
+    depends_on: [valkey, valkey-replica]
+    command: valkey-sentinel /etc/valkey/sentinel.conf
+    volumes: ["../deploy/sentinel/sentinel-2.conf:/etc/valkey/sentinel.conf"]
+    ports: ["26380:26379"]
+
+  valkey-sentinel-3:
+    image: valkey/valkey:7.2-alpine
+    depends_on: [valkey, valkey-replica]
+    command: valkey-sentinel /etc/valkey/sentinel.conf
+    volumes: ["../deploy/sentinel/sentinel-3.conf:/etc/valkey/sentinel.conf"]
+    ports: ["26381:26379"]
 
   api-eu:
     build:

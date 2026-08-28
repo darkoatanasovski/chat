@@ -22,6 +22,15 @@ type Config struct {
 	ValkeyAddr   string
 	KafkaBrokers []string
 
+	// Sentinel-managed Valkey/Redis (INSTRUCTIONS.md's Redis-HA follow-up):
+	// when ValkeySentinelAddrs is non-empty, storage/redis.ConnectSentinel
+	// is used instead of Connect(ValkeyAddr) — the client discovers the
+	// current primary through Sentinel and follows it across failover
+	// rather than pinning to one address. ValkeyMasterName must match the
+	// name in every Sentinel's own "sentinel monitor <name> ..." config.
+	ValkeySentinelAddrs []string
+	ValkeyMasterName    string
+
 	AuthSecret string
 
 	ShardsConfigPath string
@@ -55,6 +64,7 @@ func Load() (Config, error) {
 		ShardADSN:          os.Getenv("SHARD_A_DSN"),
 		ShardBDSN:          os.Getenv("SHARD_B_DSN"),
 		ValkeyAddr:         os.Getenv("VALKEY_ADDR"),
+		ValkeyMasterName:   getenvDefault("VALKEY_MASTER_NAME", "mymaster"),
 		AuthSecret:         os.Getenv("AUTH_SECRET"),
 		ShardsConfigPath:   os.Getenv("SHARDS_CONFIG"),
 		TiersConfigPath:    getenvDefault("TIERS_CONFIG", "/etc/chat/tiers.yaml"),
@@ -65,6 +75,10 @@ func Load() (Config, error) {
 
 	if brokers := os.Getenv("KAFKA_BROKERS"); brokers != "" {
 		c.KafkaBrokers = strings.Split(brokers, ",")
+	}
+
+	if sentinels := os.Getenv("VALKEY_SENTINEL_ADDRS"); sentinels != "" {
+		c.ValkeySentinelAddrs = strings.Split(sentinels, ",")
 	}
 
 	if n, err := strconv.Atoi(os.Getenv("FANOUT_SHARDS")); err == nil {

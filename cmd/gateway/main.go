@@ -42,7 +42,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	redisClient, err := redisstorage.Connect(ctx, cfg.ValkeyAddr)
+	redisClient, err := redisstorage.ConnectFromEnv(ctx, cfg.ValkeyAddr, cfg.ValkeySentinelAddrs, cfg.ValkeyMasterName)
 	if err != nil {
 		log.Error("connect redis", "error", err)
 		os.Exit(1)

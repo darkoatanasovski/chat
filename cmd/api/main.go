@@ -56,7 +56,7 @@ func main() {
 	}
 	shardPools := pgstorage.ShardPools{"shard-a": shardADSN, "shard-b": shardBDSN}
 
-	redisClient, err := redisstorage.Connect(ctx, cfg.ValkeyAddr)
+	redisClient, err := redisstorage.ConnectFromEnv(ctx, cfg.ValkeyAddr, cfg.ValkeySentinelAddrs, cfg.ValkeyMasterName)
 	if err != nil {
 		log.Error("connect redis", "error", err)
 		os.Exit(1)
