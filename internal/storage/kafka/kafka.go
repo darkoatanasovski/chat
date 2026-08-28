@@ -51,5 +51,14 @@ func NewConsumer(brokers []string, topics []string, groupID string) *kafkago.Rea
 		// that self-heal within one PartitionWatchInterval instead of
 		// requiring every member to restart.
 		WatchPartitionChanges: true,
+		// Left at the zero value, kafka-go commits synchronously (a broker
+		// round trip) after every single ReadMessage call — on Fanout's
+		// single-threaded consume loop (internal/realtime/fanout.go) that
+		// round trip serializes directly into per-message delivery latency.
+		// Batching commits is safe here because at-least-once redelivery is
+		// already a first-class case: Dedup (internal/realtime/dedup.go)
+		// makes re-processing whatever this interval leaves uncommitted
+		// after a crash or rebalance a no-op.
+		CommitInterval: time.Second,
 	})
 }

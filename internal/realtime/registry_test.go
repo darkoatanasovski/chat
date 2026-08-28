@@ -196,6 +196,50 @@ func TestRegistry_GatewaysForUsers_MultipleDevicesOnDifferentGateways(t *testing
 	}
 }
 
+func TestRegistry_GatewaysForUsers_SurvivesPartialUnregisterOnSameGateway(t *testing.T) {
+	client := testRedis(t)
+	reg := NewRegistry(client)
+	ctx := context.Background()
+
+	userID := uuid.New()
+	connA, connB := uuid.NewString(), uuid.NewString()
+	if err := reg.Register(ctx, userID, connA, "eu", "eu-gw-1"); err != nil {
+		t.Fatalf("register A: %v", err)
+	}
+	if err := reg.Register(ctx, userID, connB, "eu", "eu-gw-1"); err != nil {
+		t.Fatalf("register B: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = reg.Unregister(ctx, userID, connA)
+		_ = reg.Unregister(ctx, userID, connB)
+	})
+
+	// Two devices on the same gateway; closing one must not drop the
+	// gateway from the refcount — the other device is still connected there.
+	if err := reg.Unregister(ctx, userID, connA); err != nil {
+		t.Fatalf("unregister A: %v", err)
+	}
+	out, err := reg.GatewaysForUsers(ctx, []uuid.UUID{userID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := out[userID]; len(got) != 1 || got[0] != "eu-gw-1" {
+		t.Fatalf("expected eu-gw-1 to remain after closing one of two devices on it, got %v", got)
+	}
+
+	// Closing the last device on that gateway must remove it entirely.
+	if err := reg.Unregister(ctx, userID, connB); err != nil {
+		t.Fatalf("unregister B: %v", err)
+	}
+	out, err = reg.GatewaysForUsers(ctx, []uuid.UUID{userID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := out[userID]; ok {
+		t.Fatalf("expected no gateways once every device has disconnected, got %v", out[userID])
+	}
+}
+
 func TestRegistry_GatewaysForUsers_DedupesSameGateway(t *testing.T) {
 	client := testRedis(t)
 	reg := NewRegistry(client)
