@@ -15,6 +15,7 @@ import (
 
 	"github.com/darkoatanasovski/chat/internal/events"
 	"github.com/darkoatanasovski/chat/internal/platform/config"
+	"github.com/darkoatanasovski/chat/internal/platform/debug"
 	"github.com/darkoatanasovski/chat/internal/platform/health"
 	"github.com/darkoatanasovski/chat/internal/platform/logging"
 	"github.com/darkoatanasovski/chat/internal/platform/metrics"
@@ -54,6 +55,7 @@ func main() {
 	mux.Handle("/healthz", health.Handler(map[string]health.Checker{
 		"shard": pool.Ping,
 	}))
+	debug.Mount(mux)
 	go func() {
 		log.Info("metrics listening", "addr", cfg.MetricsAddr)
 		if err := http.ListenAndServe(cfg.MetricsAddr, mux); err != nil {

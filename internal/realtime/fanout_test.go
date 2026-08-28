@@ -29,7 +29,7 @@ func TestFanout_DeliversLocalAndRemoteMembers(t *testing.T) {
 	client := testRedis(t)
 	ctx := context.Background()
 
-	cache := NewMembershipCache(client)
+	cache := NewMembershipCache(client, nil)
 	channelID := uuid.New()
 	localUser := uuid.New()
 	remoteUser := uuid.New()
@@ -48,14 +48,14 @@ func TestFanout_DeliversLocalAndRemoteMembers(t *testing.T) {
 	hubRemote := NewHub(nil)
 	remoteConn := hubRemote.Register(remoteUser, "eu")
 
-	registry := NewRegistry(client)
+	registry := NewRegistry(client, nil)
 	remoteGatewayID := "eu-remote-" + uuid.NewString()
 	if err := registry.Register(ctx, remoteUser, remoteConn.ID, "eu", remoteGatewayID); err != nil {
 		t.Fatalf("register remote connection: %v", err)
 	}
 	t.Cleanup(func() { _ = registry.Unregister(ctx, remoteUser, remoteConn.ID) })
 
-	publisher := NewPublisher(client)
+	publisher := NewPublisher(client, nil)
 	subscriber := NewSubscriber(client, remoteGatewayID, hubRemote, discardLogger())
 	subCtx, cancelSub := context.WithCancel(ctx)
 	defer cancelSub()
@@ -63,7 +63,7 @@ func TestFanout_DeliversLocalAndRemoteMembers(t *testing.T) {
 	waitForSubscriber(t, client, gatewayChannel(remoteGatewayID))
 
 	delivery := NewDelivery(hubHere, cache, nil, registry, publisher, discardLogger())
-	fanout := NewFanout(nil, delivery, NewDedup(client, uuid.NewString()), nil, discardLogger())
+	fanout := NewFanout(nil, delivery, NewDedup(client, uuid.NewString(), nil), nil, discardLogger())
 
 	payload := events.MessageCreatedPayload{
 		MessageID:       uuid.New(),
@@ -96,7 +96,7 @@ func TestFanout_MemberWithNoLiveConnectionIsSkipped(t *testing.T) {
 	client := testRedis(t)
 	ctx := context.Background()
 
-	cache := NewMembershipCache(client)
+	cache := NewMembershipCache(client, nil)
 	channelID := uuid.New()
 	offlineUser := uuid.New()
 	if err := cache.SetMembers(ctx, channelID, []uuid.UUID{offlineUser}); err != nil {
@@ -104,10 +104,10 @@ func TestFanout_MemberWithNoLiveConnectionIsSkipped(t *testing.T) {
 	}
 
 	hub := NewHub(nil)
-	registry := NewRegistry(client)
-	publisher := NewPublisher(client)
+	registry := NewRegistry(client, nil)
+	publisher := NewPublisher(client, nil)
 	delivery := NewDelivery(hub, cache, nil, registry, publisher, discardLogger())
-	fanout := NewFanout(nil, delivery, NewDedup(client, uuid.NewString()), nil, discardLogger())
+	fanout := NewFanout(nil, delivery, NewDedup(client, uuid.NewString(), nil), nil, discardLogger())
 
 	payload := events.MessageCreatedPayload{
 		MessageID:       uuid.New(),
@@ -134,7 +134,7 @@ func TestFanout_DeliversReactionUpdated(t *testing.T) {
 	client := testRedis(t)
 	ctx := context.Background()
 
-	cache := NewMembershipCache(client)
+	cache := NewMembershipCache(client, nil)
 	channelID := uuid.New()
 	localUser := uuid.New()
 	if err := cache.SetMembers(ctx, channelID, []uuid.UUID{localUser}); err != nil {
@@ -144,10 +144,10 @@ func TestFanout_DeliversReactionUpdated(t *testing.T) {
 	hub := NewHub(nil)
 	localConn := hub.Register(localUser, "eu")
 
-	registry := NewRegistry(client)
-	publisher := NewPublisher(client)
+	registry := NewRegistry(client, nil)
+	publisher := NewPublisher(client, nil)
 	delivery := NewDelivery(hub, cache, nil, registry, publisher, discardLogger())
-	fanout := NewFanout(nil, delivery, NewDedup(client, uuid.NewString()), nil, discardLogger())
+	fanout := NewFanout(nil, delivery, NewDedup(client, uuid.NewString(), nil), nil, discardLogger())
 
 	payload := events.ReactionUpdatedPayload{
 		EventID:         uuid.New(),
@@ -181,7 +181,7 @@ func TestFanout_ReactionUpdatedDedupsByEventID(t *testing.T) {
 	client := testRedis(t)
 	ctx := context.Background()
 
-	cache := NewMembershipCache(client)
+	cache := NewMembershipCache(client, nil)
 	channelID := uuid.New()
 	localUser := uuid.New()
 	if err := cache.SetMembers(ctx, channelID, []uuid.UUID{localUser}); err != nil {
@@ -191,10 +191,10 @@ func TestFanout_ReactionUpdatedDedupsByEventID(t *testing.T) {
 	hub := NewHub(nil)
 	localConn := hub.Register(localUser, "eu")
 
-	registry := NewRegistry(client)
-	publisher := NewPublisher(client)
+	registry := NewRegistry(client, nil)
+	publisher := NewPublisher(client, nil)
 	delivery := NewDelivery(hub, cache, nil, registry, publisher, discardLogger())
-	fanout := NewFanout(nil, delivery, NewDedup(client, uuid.NewString()), nil, discardLogger())
+	fanout := NewFanout(nil, delivery, NewDedup(client, uuid.NewString(), nil), nil, discardLogger())
 
 	payload := events.ReactionUpdatedPayload{
 		EventID: uuid.New(), ChannelID: channelID, MessageID: uuid.New(), ActorID: localUser,
@@ -227,7 +227,7 @@ func TestFanout_DeliversReadUpdated(t *testing.T) {
 	client := testRedis(t)
 	ctx := context.Background()
 
-	cache := NewMembershipCache(client)
+	cache := NewMembershipCache(client, nil)
 	channelID := uuid.New()
 	localUser := uuid.New()
 	if err := cache.SetMembers(ctx, channelID, []uuid.UUID{localUser}); err != nil {
@@ -237,10 +237,10 @@ func TestFanout_DeliversReadUpdated(t *testing.T) {
 	hub := NewHub(nil)
 	localConn := hub.Register(localUser, "eu")
 
-	registry := NewRegistry(client)
-	publisher := NewPublisher(client)
+	registry := NewRegistry(client, nil)
+	publisher := NewPublisher(client, nil)
 	delivery := NewDelivery(hub, cache, nil, registry, publisher, discardLogger())
-	fanout := NewFanout(nil, delivery, NewDedup(client, uuid.NewString()), nil, discardLogger())
+	fanout := NewFanout(nil, delivery, NewDedup(client, uuid.NewString(), nil), nil, discardLogger())
 
 	payload := events.ReadUpdatedPayload{
 		EventID: uuid.New(), ChannelID: channelID, UserID: localUser, LastReadSequence: 5,
@@ -264,7 +264,7 @@ func TestFanout_ReadUpdatedDedupsByEventID(t *testing.T) {
 	client := testRedis(t)
 	ctx := context.Background()
 
-	cache := NewMembershipCache(client)
+	cache := NewMembershipCache(client, nil)
 	channelID := uuid.New()
 	localUser := uuid.New()
 	if err := cache.SetMembers(ctx, channelID, []uuid.UUID{localUser}); err != nil {
@@ -274,10 +274,10 @@ func TestFanout_ReadUpdatedDedupsByEventID(t *testing.T) {
 	hub := NewHub(nil)
 	localConn := hub.Register(localUser, "eu")
 
-	registry := NewRegistry(client)
-	publisher := NewPublisher(client)
+	registry := NewRegistry(client, nil)
+	publisher := NewPublisher(client, nil)
 	delivery := NewDelivery(hub, cache, nil, registry, publisher, discardLogger())
-	fanout := NewFanout(nil, delivery, NewDedup(client, uuid.NewString()), nil, discardLogger())
+	fanout := NewFanout(nil, delivery, NewDedup(client, uuid.NewString(), nil), nil, discardLogger())
 
 	payload := events.ReadUpdatedPayload{EventID: uuid.New(), ChannelID: channelID, UserID: localUser, LastReadSequence: 3}
 	value, err := json.Marshal(payload)

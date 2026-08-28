@@ -18,7 +18,7 @@ func sortedIDs(ids []uuid.UUID) []string {
 }
 
 func TestMembershipCache_MissReportsNotOK(t *testing.T) {
-	cache := NewMembershipCache(testRedis(t))
+	cache := NewMembershipCache(testRedis(t), nil)
 	members, ok, err := cache.Members(context.Background(), uuid.New())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -32,7 +32,7 @@ func TestMembershipCache_MissReportsNotOK(t *testing.T) {
 }
 
 func TestMembershipCache_SetMembersThenGet(t *testing.T) {
-	cache := NewMembershipCache(testRedis(t))
+	cache := NewMembershipCache(testRedis(t), nil)
 	ctx := context.Background()
 	channelID := uuid.New()
 	want := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
@@ -60,7 +60,7 @@ func TestMembershipCache_SetMembersThenGet(t *testing.T) {
 }
 
 func TestMembershipCache_SetMembersReplacesPreviousSet(t *testing.T) {
-	cache := NewMembershipCache(testRedis(t))
+	cache := NewMembershipCache(testRedis(t), nil)
 	ctx := context.Background()
 	channelID := uuid.New()
 	stale := uuid.New()
@@ -88,7 +88,7 @@ func TestMembershipCache_SetMembersReplacesPreviousSet(t *testing.T) {
 }
 
 func TestMembershipCache_AddMember(t *testing.T) {
-	cache := NewMembershipCache(testRedis(t))
+	cache := NewMembershipCache(testRedis(t), nil)
 	ctx := context.Background()
 	channelID := uuid.New()
 	first := uuid.New()

@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/darkoatanasovski/chat/internal/platform/metrics"
 )
 
 const dedupTTL = 10 * time.Minute
@@ -33,19 +35,25 @@ const dedupTTL = 10 * time.Minute
 type Dedup struct {
 	redis     *redis.Client
 	namespace string
+	metrics   *metrics.Metrics
 }
 
-func NewDedup(redisClient *redis.Client, namespace string) *Dedup {
-	return &Dedup{redis: redisClient, namespace: namespace}
+func NewDedup(redisClient *redis.Client, namespace string, m *metrics.Metrics) *Dedup {
+	return &Dedup{redis: redisClient, namespace: namespace, metrics: m}
 }
 
 // SeenBefore atomically marks eventID as processed by this gateway and
 // reports whether it had already been seen by this gateway.
 func (d *Dedup) SeenBefore(ctx context.Context, eventID string) (bool, error) {
-	key := "dedup:event:" + d.namespace + ":" + eventID
-	ok, err := d.redis.SetNX(ctx, key, 1, dedupTTL).Result()
-	if err != nil {
-		return false, fmt.Errorf("realtime: dedup check: %w", err)
-	}
-	return !ok, nil
+	var seen bool
+	err := d.metrics.TimeRedis("dedup_seen_before", func() error {
+		key := "dedup:event:" + d.namespace + ":" + eventID
+		ok, err := d.redis.SetNX(ctx, key, 1, dedupTTL).Result()
+		if err != nil {
+			return fmt.Errorf("realtime: dedup check: %w", err)
+		}
+		seen = !ok
+		return nil
+	})
+	return seen, err
 }

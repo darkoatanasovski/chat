@@ -23,7 +23,7 @@ func TestPublisher_Subscriber_DeliversToLocalHub(t *testing.T) {
 	go subscriber.Run(subCtx)
 	waitForSubscriber(t, client, gatewayChannel(gatewayID))
 
-	publisher := NewPublisher(client)
+	publisher := NewPublisher(client, nil)
 	if err := publisher.Push(ctx, gatewayID, []uuid.UUID{userID}, []byte(`{"body":"hi"}`)); err != nil {
 		t.Fatalf("push: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestPublisher_Subscriber_MultipleTargetUsersInOnePush(t *testing.T) {
 	go subscriber.Run(subCtx)
 	waitForSubscriber(t, client, gatewayChannel(gatewayID))
 
-	publisher := NewPublisher(client)
+	publisher := NewPublisher(client, nil)
 	if err := publisher.Push(ctx, gatewayID, []uuid.UUID{userA, userB}, []byte(`{"body":"hi"}`)); err != nil {
 		t.Fatalf("push: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestPublisher_Push_UnrelatedGatewayDoesNotReceiveIt(t *testing.T) {
 	waitForSubscriber(t, client, gatewayChannel(targetGateway))
 	waitForSubscriber(t, client, gatewayChannel(otherGateway))
 
-	publisher := NewPublisher(client)
+	publisher := NewPublisher(client, nil)
 	if err := publisher.Push(ctx, targetGateway, []uuid.UUID{userID}, []byte(`{"body":"hi"}`)); err != nil {
 		t.Fatalf("push: %v", err)
 	}

@@ -280,12 +280,12 @@ func TestFanoutRun_GracefulShutdownDrainsInFlightWork(t *testing.T) {
 // dispatch mechanics are sound in isolation.
 func TestFanoutRun_EndToEnd_DifferentChannelsDeliverConcurrentlyWithRealHandle(t *testing.T) {
 	client := testRedis(t)
-	cache := NewMembershipCache(client)
+	cache := NewMembershipCache(client, nil)
 	hub := NewHub(nil)
-	registry := NewRegistry(client)
-	publisher := NewPublisher(client)
+	registry := NewRegistry(client, nil)
+	publisher := NewPublisher(client, nil)
 	delivery := NewDelivery(hub, cache, nil, registry, publisher, discardLogger())
-	dedup := NewDedup(client, uuid.NewString())
+	dedup := NewDedup(client, uuid.NewString(), nil)
 
 	ctxSetup := context.Background()
 	type recipient struct {

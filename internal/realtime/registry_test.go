@@ -10,7 +10,7 @@ import (
 
 func TestRegistry_RegisterWritesSetAndHashWithTTL(t *testing.T) {
 	client := testRedis(t)
-	reg := NewRegistry(client)
+	reg := NewRegistry(client, nil)
 	ctx := context.Background()
 	userID := uuid.New()
 	connID := uuid.NewString()
@@ -47,7 +47,7 @@ func TestRegistry_RegisterWritesSetAndHashWithTTL(t *testing.T) {
 
 func TestRegistry_MultipleConnectionsPerUser(t *testing.T) {
 	client := testRedis(t)
-	reg := NewRegistry(client)
+	reg := NewRegistry(client, nil)
 	ctx := context.Background()
 	userID := uuid.New()
 	connA := uuid.NewString()
@@ -89,7 +89,7 @@ func TestRegistry_MultipleConnectionsPerUser(t *testing.T) {
 
 func TestRegistry_Heartbeat_RefreshesTTL(t *testing.T) {
 	client := testRedis(t)
-	reg := NewRegistry(client)
+	reg := NewRegistry(client, nil)
 	ctx := context.Background()
 	userID := uuid.New()
 	connID := uuid.NewString()
@@ -118,7 +118,7 @@ func TestRegistry_Heartbeat_RefreshesTTL(t *testing.T) {
 
 func TestRegistry_Unregister_UnknownConnectionIsNoop(t *testing.T) {
 	client := testRedis(t)
-	reg := NewRegistry(client)
+	reg := NewRegistry(client, nil)
 	ctx := context.Background()
 	if err := reg.Unregister(ctx, uuid.New(), uuid.NewString()); err != nil {
 		t.Fatalf("unregistering a connection that was never registered should not error: %v", err)
@@ -126,7 +126,7 @@ func TestRegistry_Unregister_UnknownConnectionIsNoop(t *testing.T) {
 }
 
 func TestRegistry_GatewaysForUsers_Empty(t *testing.T) {
-	reg := NewRegistry(testRedis(t))
+	reg := NewRegistry(testRedis(t), nil)
 	out, err := reg.GatewaysForUsers(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -138,7 +138,7 @@ func TestRegistry_GatewaysForUsers_Empty(t *testing.T) {
 
 func TestRegistry_GatewaysForUsers_MixOfConnectedAndNot(t *testing.T) {
 	client := testRedis(t)
-	reg := NewRegistry(client)
+	reg := NewRegistry(client, nil)
 	ctx := context.Background()
 
 	connected := uuid.New()
@@ -163,7 +163,7 @@ func TestRegistry_GatewaysForUsers_MixOfConnectedAndNot(t *testing.T) {
 
 func TestRegistry_GatewaysForUsers_MultipleDevicesOnDifferentGateways(t *testing.T) {
 	client := testRedis(t)
-	reg := NewRegistry(client)
+	reg := NewRegistry(client, nil)
 	ctx := context.Background()
 
 	userID := uuid.New()
@@ -198,7 +198,7 @@ func TestRegistry_GatewaysForUsers_MultipleDevicesOnDifferentGateways(t *testing
 
 func TestRegistry_GatewaysForUsers_SurvivesPartialUnregisterOnSameGateway(t *testing.T) {
 	client := testRedis(t)
-	reg := NewRegistry(client)
+	reg := NewRegistry(client, nil)
 	ctx := context.Background()
 
 	userID := uuid.New()
@@ -242,7 +242,7 @@ func TestRegistry_GatewaysForUsers_SurvivesPartialUnregisterOnSameGateway(t *tes
 
 func TestRegistry_GatewaysForUsers_DedupesSameGateway(t *testing.T) {
 	client := testRedis(t)
-	reg := NewRegistry(client)
+	reg := NewRegistry(client, nil)
 	ctx := context.Background()
 
 	userID := uuid.New()

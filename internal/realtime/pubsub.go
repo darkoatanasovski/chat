@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/darkoatanasovski/chat/internal/platform/metrics"
 )
 
 // gatewayChannel is the Redis Pub/Sub channel a single gateway instance
@@ -35,25 +37,28 @@ type pushEnvelope struct {
 // comment), a missed push is recovered by the client's existing
 // reconnect-and-refetch path, not retried here.
 type Publisher struct {
-	redis *redis.Client
+	redis   *redis.Client
+	metrics *metrics.Metrics
 }
 
-func NewPublisher(redisClient *redis.Client) *Publisher {
-	return &Publisher{redis: redisClient}
+func NewPublisher(redisClient *redis.Client, m *metrics.Metrics) *Publisher {
+	return &Publisher{redis: redisClient, metrics: m}
 }
 
 // Push delivers frame to userIDs' connections on gatewayID. Callers group
 // their remote members by target gateway first (see Fanout.handle) so this
 // is called once per destination gateway, not once per user.
 func (p *Publisher) Push(ctx context.Context, gatewayID string, userIDs []uuid.UUID, frame []byte) error {
-	data, err := json.Marshal(pushEnvelope{UserIDs: userIDs, Frame: frame})
-	if err != nil {
-		return fmt.Errorf("realtime: marshal push envelope: %w", err)
-	}
-	if err := p.redis.Publish(ctx, gatewayChannel(gatewayID), data).Err(); err != nil {
-		return fmt.Errorf("realtime: publish to gateway %s: %w", gatewayID, err)
-	}
-	return nil
+	return p.metrics.TimeRedis("publisher_push", func() error {
+		data, err := json.Marshal(pushEnvelope{UserIDs: userIDs, Frame: frame})
+		if err != nil {
+			return fmt.Errorf("realtime: marshal push envelope: %w", err)
+		}
+		if err := p.redis.Publish(ctx, gatewayChannel(gatewayID), data).Err(); err != nil {
+			return fmt.Errorf("realtime: publish to gateway %s: %w", gatewayID, err)
+		}
+		return nil
+	})
 }
 
 // Subscriber listens on this instance's own gatewayChannel and hands
