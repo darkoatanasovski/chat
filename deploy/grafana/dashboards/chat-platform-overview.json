@@ -1,0 +1,145 @@
+{
+  "id": null,
+  "uid": "chat-platform-overview",
+  "title": "Chat Platform Overview",
+  "tags": ["chat-platform"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    { "id": 100, "type": "row", "title": "HTTP API", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "panels": [] },
+    {
+      "id": 1, "type": "timeseries", "title": "Request rate by route",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rate(chat_api_http_requests_total[1m])) by (route)", "legendFormat": "{{route}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "Request latency (p50 / p90 / p99)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 5 } }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(chat_api_http_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.90, sum(rate(chat_api_http_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p90", "refId": "B" },
+        { "expr": "histogram_quantile(0.99, sum(rate(chat_api_http_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p99", "refId": "C" }
+      ]
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "Non-2xx responses by status",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "bars", "fillOpacity": 60, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rate(chat_api_http_requests_total{status!~\"OK|Created|No Content\"}[1m])) by (status)", "legendFormat": "{{status}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Cross-region forward latency",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 5 } }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.99, sum(rate(chat_api_cross_region_latency_seconds_bucket[5m])) by (le, from_region, to_region))", "legendFormat": "{{from_region}} -> {{to_region}} p99", "refId": "A" }
+      ]
+    },
+
+    { "id": 101, "type": "row", "title": "Realtime / WebSocket", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 }, "panels": [] },
+    {
+      "id": 5, "type": "timeseries", "title": "Active WebSocket connections",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 15 } }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(chat_gateway_websocket_connections_active)", "legendFormat": "total", "refId": "A" },
+        { "expr": "chat_gateway_websocket_connections_active", "legendFormat": "{{instance}}", "refId": "B" }
+      ]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Disconnects by reason",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 60, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rate(chat_gateway_websocket_disconnects_total[1m])) by (reason)", "legendFormat": "{{reason}}", "refId": "A" }
+      ]
+    },
+
+    { "id": 102, "type": "row", "title": "Message Pipeline", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 }, "panels": [] },
+    {
+      "id": 7, "type": "timeseries", "title": "Messages sent (by region)",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rate(chat_api_messages_sent_total[1m])) by (region)", "legendFormat": "{{region}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "End-to-end delivery latency",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 5 } }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(chat_gateway_message_delivery_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.90, sum(rate(chat_gateway_message_delivery_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p90", "refId": "B" },
+        { "expr": "histogram_quantile(0.99, sum(rate(chat_gateway_message_delivery_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p99", "refId": "C" }
+      ]
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "Kafka producer latency (p99)",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.99, sum(rate(chat_worker_kafka_producer_latency_seconds_bucket[5m])) by (le, shard))", "legendFormat": "{{shard}}", "refId": "A" }
+      ]
+    },
+
+    { "id": 103, "type": "row", "title": "Quota & Rate Limits", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 }, "panels": [] },
+    {
+      "id": 10, "type": "timeseries", "title": "Rate-limit rejections (429) by capability",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "bars", "fillOpacity": 60, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rate(chat_api_rate_limit_rejections_total[1m])) by (capability)", "legendFormat": "{{capability}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "Quota rejections (limit reached) by capability",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "bars", "fillOpacity": 60, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rate(chat_api_quota_rejections_total[1m])) by (capability)", "legendFormat": "{{capability}}", "refId": "A" }
+      ]
+    },
+
+    { "id": 104, "type": "row", "title": "Storage", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 44 }, "panels": [] },
+    {
+      "id": 12, "type": "timeseries", "title": "Postgres query latency (p99 by query)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 45 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 5 } }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.99, sum(rate(chat_api_postgres_query_latency_seconds_bucket[5m])) by (le, query))", "legendFormat": "{{query}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 13, "type": "timeseries", "title": "Redis latency (p99) & errors",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 45 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 5 } }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.99, sum(rate(chat_api_redis_latency_seconds_bucket[5m])) by (le, op))", "legendFormat": "{{op}} latency p99", "refId": "A" },
+        { "expr": "sum(rate(chat_api_redis_errors_total[1m])) by (op)", "legendFormat": "{{op}} errors/s", "refId": "B" }
+      ]
+    }
+  ]
+}

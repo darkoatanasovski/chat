@@ -1,0 +1,81 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #08090a;
+  --color-surface: #101211;
+  --color-surface-2: #171a17;
+  --color-border: #242920;
+  --color-border-soft: #181c16;
+  --color-text: #eef2ec;
+  --color-text-muted: #99a69b;
+  --color-text-faint: #5c675e;
+
+  --color-accent: #2ee878;
+  --color-accent-strong: #17c765;
+  --color-accent-soft: rgb(46 232 120 / 0.14);
+
+  --color-success: #2ee878;
+  --color-success-soft: rgb(46 232 120 / 0.12);
+  --color-danger: #fb7469;
+  --color-danger-soft: rgb(251 116 105 / 0.12);
+  --color-warning: #f2b33d;
+  --color-warning-soft: rgb(242 179 61 / 0.12);
+  --color-info: #38bdf8;
+  --color-info-soft: rgb(56 189 248 / 0.12);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", monospace;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 15px;
+}
+
+* {
+  scrollbar-color: var(--color-border) transparent;
+  scrollbar-width: thin;
+}
+
+button:not(:disabled),
+a,
+[role="button"],
+summary,
+select {
+  cursor: pointer;
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 999px; }
+*::-webkit-scrollbar-thumb:hover { background: var(--color-text-faint); }
+
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fade-in-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes modal-in { from { opacity: 0; transform: translateY(10px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes overlay-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes shimmer { from { background-position: -400px 0; } to { background-position: 400px 0; } }
+
+.animate-fade-in { animation: fade-in 0.2s ease-out both; }
+.animate-fade-in-up { animation: fade-in-up 0.35s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-modal-in { animation: modal-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-overlay-in { animation: overlay-in 0.18s ease-out both; }
+.animate-shimmer {
+  background: linear-gradient(90deg, var(--color-surface-2) 0%, var(--color-border) 50%, var(--color-surface-2) 100%);
+  background-size: 800px 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in,
+  .animate-fade-in-up,
+  .animate-modal-in,
+  .animate-overlay-in,
+  .animate-shimmer {
+    animation: none !important;
+  }
+  * {
+    transition-duration: 0.001ms !important;
+  }
+}

@@ -1,0 +1,6 @@
+.env
+*.local
+/bin/
+node_modules/
+.next/
+demo/.env.local

@@ -1,0 +1,46 @@
+# Tier/quota definitions (INSTRUCTIONS.md §22). Values here are configurable
+# examples, not hardcoded product decisions -- edit freely, no code changes
+# required.
+#
+# max_apps applies to an Organization (how many Apps it may create);
+# the rest apply per App, to that app's end-users. reactions_per_minute is
+# set higher than messages_per_minute at every tier since reacting is
+# lower-friction than composing a message and happens more often.
+# read_updates_per_minute is lower than reactions — a client should debounce
+# "mark read" client-side (once per channel open, not once per message).
+# Typing presence has no rate limit here: it never touches this HTTP layer
+# at all (relayed directly over the WebSocket, see
+# internal/realtime.ConnectHandler.relayTyping).
+
+tiers:
+  FREE:
+    max_apps: 1
+    max_channels: 1
+    max_channel_members: 3
+    messages_per_minute: 20
+    reactions_per_minute: 40
+    read_updates_per_minute: 30
+
+  PRO:
+    max_apps: 5
+    max_channels: 20
+    max_channel_members: 100
+    messages_per_minute: 200
+    reactions_per_minute: 400
+    read_updates_per_minute: 300
+
+  BUSINESS:
+    max_apps: 20
+    max_channels: 100
+    max_channel_members: 1000
+    messages_per_minute: 1000
+    reactions_per_minute: 2000
+    read_updates_per_minute: 1500
+
+  ENTERPRISE:
+    max_apps: 1000
+    max_channels: 10000
+    max_channel_members: 100000
+    messages_per_minute: 10000
+    reactions_per_minute: 20000
+    read_updates_per_minute: 15000
