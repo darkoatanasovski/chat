@@ -1,0 +1,57 @@
+name: Deploy to Railway (dev)
+
+# Merge to master -> build/test gate, then deploy the api/gateway/worker
+# services and apply any new migrations. See docs/deploy/railway.md for the
+# one-time Railway project setup this depends on (service names, env vars,
+# and the RAILWAY_TOKEN / RAILWAY_POSTGRES_URL secrets below).
+on:
+  push:
+    branches: [master]
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...
+      # Not `go test ./...` here: several packages' tests expect a live
+      # Postgres/Redis/Kafka stack (see internal/events/publisher_test.go,
+      # internal/realtime's testRedis helper) the way the local
+      # docker-compose dev stack provides, which this workflow doesn't
+      # stand up. Build+vet is the gate for this deploy step; the full
+      # suite runs against that stack separately (see the platform-up
+      # skill / README).
+
+  migrate:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply migrations
+        env:
+          DATABASE_URL: ${{ secrets.RAILWAY_POSTGRES_URL }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          bash deploy/railway/migrate.sh
+
+  deploy:
+    needs: migrate
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+      - name: Deploy api
+        run: railway up --service api --detach
+      - name: Deploy gateway
+        run: railway up --service gateway --detach
+      - name: Deploy worker
+        run: railway up --service worker --detach
