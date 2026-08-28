@@ -83,10 +83,11 @@ func buildTestApp() (*App, error) {
 	appCredentials := apps.NewCredentialRepo(controlPool)
 	appTiers := apps.NewTierResolver(redisClient, appsRepo.TierSource)
 
+	m := metrics.New("chat_api_test")
 	return &App{
 		cfg:             cfg,
 		log:             slog.New(slog.NewTextHandler(io.Discard, nil)),
-		metrics:         metrics.New("chat_api_test"),
+		metrics:         m,
 		signer:          auth.NewSigner(cfg.AuthSecret),
 		router:          router,
 		region:          region,
@@ -107,7 +108,7 @@ func buildTestApp() (*App, error) {
 		messagesRepo:    messages.NewRepo(),
 		reactionsRepo:   reactions.NewRepo(),
 		readStateRepo:   readstate.NewRepo(),
-		membershipCache: realtime.NewMembershipCache(redisClient),
+		membershipCache: realtime.NewMembershipCache(redisClient, m),
 		peerClient:      newPeerClient(),
 	}, nil
 }

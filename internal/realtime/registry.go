@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/darkoatanasovski/chat/internal/platform/metrics"
 )
 
 const connectionTTL = 60 * time.Second
@@ -24,32 +26,37 @@ const connectionTTL = 60 * time.Second
 // it lags true liveness by at most connectionTTL after the user's last
 // connection-lifecycle event on any gateway.
 type Registry struct {
-	redis *redis.Client
+	redis   *redis.Client
+	metrics *metrics.Metrics
 }
 
-func NewRegistry(redisClient *redis.Client) *Registry {
-	return &Registry{redis: redisClient}
+func NewRegistry(redisClient *redis.Client, m *metrics.Metrics) *Registry {
+	return &Registry{redis: redisClient, metrics: m}
 }
 
 func (r *Registry) Register(ctx context.Context, userID uuid.UUID, connID, region, gatewayID string) error {
-	setKey := userSetKey(userID)
-	connKey := connectionKey(userID, connID)
-	gwKey := userGatewaysKey(userID)
+	return r.metrics.TimeRedis("registry_register", func() error {
+		setKey := userSetKey(userID)
+		connKey := connectionKey(userID, connID)
+		gwKey := userGatewaysKey(userID)
 
-	pipe := r.redis.TxPipeline()
-	pipe.SAdd(ctx, setKey, connID)
-	pipe.HSet(ctx, connKey, "region", region, "gateway_id", gatewayID)
-	pipe.Expire(ctx, connKey, connectionTTL)
-	pipe.HIncrBy(ctx, gwKey, gatewayID, 1)
-	pipe.Expire(ctx, gwKey, connectionTTL)
-	if _, err := pipe.Exec(ctx); err != nil {
-		return fmt.Errorf("realtime: register connection: %w", err)
-	}
-	return nil
+		pipe := r.redis.TxPipeline()
+		pipe.SAdd(ctx, setKey, connID)
+		pipe.HSet(ctx, connKey, "region", region, "gateway_id", gatewayID)
+		pipe.Expire(ctx, connKey, connectionTTL)
+		pipe.HIncrBy(ctx, gwKey, gatewayID, 1)
+		pipe.Expire(ctx, gwKey, connectionTTL)
+		if _, err := pipe.Exec(ctx); err != nil {
+			return fmt.Errorf("realtime: register connection: %w", err)
+		}
+		return nil
+	})
 }
 
 func (r *Registry) Heartbeat(ctx context.Context, userID uuid.UUID, connID string) error {
-	return r.redis.Expire(ctx, connectionKey(userID, connID), connectionTTL).Err()
+	return r.metrics.TimeRedis("registry_heartbeat", func() error {
+		return r.redis.Expire(ctx, connectionKey(userID, connID), connectionTTL).Err()
+	})
 }
 
 // decrGatewayScript atomically decrements this user's refcount for one
@@ -65,26 +72,28 @@ return v
 `)
 
 func (r *Registry) Unregister(ctx context.Context, userID uuid.UUID, connID string) error {
-	connKey := connectionKey(userID, connID)
+	return r.metrics.TimeRedis("registry_unregister", func() error {
+		connKey := connectionKey(userID, connID)
 
-	pipe := r.redis.TxPipeline()
-	gwIDCmd := pipe.HGet(ctx, connKey, "gateway_id")
-	pipe.SRem(ctx, userSetKey(userID), connID)
-	pipe.Del(ctx, connKey)
-	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
-		return fmt.Errorf("realtime: unregister connection: %w", err)
-	}
+		pipe := r.redis.TxPipeline()
+		gwIDCmd := pipe.HGet(ctx, connKey, "gateway_id")
+		pipe.SRem(ctx, userSetKey(userID), connID)
+		pipe.Del(ctx, connKey)
+		if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+			return fmt.Errorf("realtime: unregister connection: %w", err)
+		}
 
-	if gatewayID, err := gwIDCmd.Result(); err == nil && gatewayID != "" {
-		gwKey := userGatewaysKey(userID)
-		if err := decrGatewayScript.Run(ctx, r.redis, []string{gwKey}, gatewayID).Err(); err != nil {
-			return fmt.Errorf("realtime: decrement gateway refcount: %w", err)
+		if gatewayID, err := gwIDCmd.Result(); err == nil && gatewayID != "" {
+			gwKey := userGatewaysKey(userID)
+			if err := decrGatewayScript.Run(ctx, r.redis, []string{gwKey}, gatewayID).Err(); err != nil {
+				return fmt.Errorf("realtime: decrement gateway refcount: %w", err)
+			}
+			if err := r.redis.Expire(ctx, gwKey, connectionTTL).Err(); err != nil {
+				return fmt.Errorf("realtime: refresh gateway refcount ttl: %w", err)
+			}
 		}
-		if err := r.redis.Expire(ctx, gwKey, connectionTTL).Err(); err != nil {
-			return fmt.Errorf("realtime: refresh gateway refcount ttl: %w", err)
-		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // GatewaysForUsers returns, for each of userIDs that has at least one live
@@ -113,29 +122,33 @@ func (r *Registry) GatewaysForUsers(ctx context.Context, userIDs []uuid.UUID) (m
 		return nil, nil
 	}
 
-	pipe := r.redis.Pipeline()
-	cmds := make([]*redis.MapStringStringCmd, len(userIDs))
-	for i, id := range userIDs {
-		cmds[i] = pipe.HGetAll(ctx, userGatewaysKey(id))
-	}
-	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
-		return nil, fmt.Errorf("realtime: resolve gateway ids: %w", err)
-	}
-
-	out := make(map[uuid.UUID][]string)
-	for i, id := range userIDs {
-		fields, err := cmds[i].Result()
-		if err != nil || len(fields) == 0 {
-			continue
+	var out map[uuid.UUID][]string
+	err := r.metrics.TimeRedis("registry_gateways_for_users", func() error {
+		pipe := r.redis.Pipeline()
+		cmds := make([]*redis.MapStringStringCmd, len(userIDs))
+		for i, id := range userIDs {
+			cmds[i] = pipe.HGetAll(ctx, userGatewaysKey(id))
 		}
-		for gatewayID, count := range fields {
-			if count == "0" {
+		if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+			return fmt.Errorf("realtime: resolve gateway ids: %w", err)
+		}
+
+		out = make(map[uuid.UUID][]string)
+		for i, id := range userIDs {
+			fields, err := cmds[i].Result()
+			if err != nil || len(fields) == 0 {
 				continue
 			}
-			out[id] = append(out[id], gatewayID)
+			for gatewayID, count := range fields {
+				if count == "0" {
+					continue
+				}
+				out[id] = append(out[id], gatewayID)
+			}
 		}
-	}
-	return out, nil
+		return nil
+	})
+	return out, err
 }
 
 func userSetKey(userID uuid.UUID) string {

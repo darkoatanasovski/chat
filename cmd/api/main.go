@@ -15,6 +15,7 @@ import (
 	"github.com/darkoatanasovski/chat/internal/orgusers"
 	"github.com/darkoatanasovski/chat/internal/platform/auth"
 	"github.com/darkoatanasovski/chat/internal/platform/config"
+	"github.com/darkoatanasovski/chat/internal/platform/debug"
 	"github.com/darkoatanasovski/chat/internal/platform/logging"
 	"github.com/darkoatanasovski/chat/internal/platform/metrics"
 	"github.com/darkoatanasovski/chat/internal/quota"
@@ -110,12 +111,13 @@ func main() {
 		messagesRepo:    messages.NewRepo(),
 		reactionsRepo:   reactions.NewRepo(),
 		readStateRepo:   readstate.NewRepo(),
-		membershipCache: realtime.NewMembershipCache(redisClient),
+		membershipCache: realtime.NewMembershipCache(redisClient, m),
 		peerClient:      newPeerClient(),
 	}
 
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("/metrics", metrics.Handler())
+	debug.Mount(metricsMux)
 	go func() {
 		log.Info("metrics listening", "addr", cfg.MetricsAddr)
 		if err := http.ListenAndServe(cfg.MetricsAddr, metricsMux); err != nil {

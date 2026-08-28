@@ -37,8 +37,8 @@ func TestDedup_NamespaceIsolation(t *testing.T) {
 	ctx := context.Background()
 	eventID := uuid.NewString() + ":1"
 
-	euDedup := NewDedup(client, "eu-gateway-"+uuid.NewString())
-	usDedup := NewDedup(client, "us-gateway-"+uuid.NewString())
+	euDedup := NewDedup(client, "eu-gateway-"+uuid.NewString(), nil)
+	usDedup := NewDedup(client, "us-gateway-"+uuid.NewString(), nil)
 
 	euSeen, err := euDedup.SeenBefore(ctx, eventID)
 	if err != nil {

@@ -105,16 +105,24 @@ func Handler() http.Handler {
 
 // TimePostgres runs fn and records its duration under the given query label.
 // Callers pass a short, low-cardinality query name (e.g. "insert_message"),
-// never interpolated SQL or IDs.
+// never interpolated SQL or IDs. A nil *Metrics (many tests construct
+// storage types without one) just runs fn — never a required dependency.
 func (m *Metrics) TimePostgres(query string, fn func() error) error {
+	if m == nil {
+		return fn()
+	}
 	start := time.Now()
 	err := fn()
 	m.PostgresQueryLatency.WithLabelValues(query).Observe(time.Since(start).Seconds())
 	return err
 }
 
-// TimeRedis runs fn and records latency/error metrics under the given op label.
+// TimeRedis runs fn and records latency/error metrics under the given op
+// label. A nil *Metrics just runs fn — see TimePostgres.
 func (m *Metrics) TimeRedis(op string, fn func() error) error {
+	if m == nil {
+		return fn()
+	}
 	start := time.Now()
 	err := fn()
 	m.RedisLatency.WithLabelValues(op).Observe(time.Since(start).Seconds())

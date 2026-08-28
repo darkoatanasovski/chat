@@ -13,12 +13,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/darkoatanasovski/chat/internal/events"
 	"github.com/darkoatanasovski/chat/internal/membership"
 	"github.com/darkoatanasovski/chat/internal/platform/auth"
 	"github.com/darkoatanasovski/chat/internal/platform/config"
+	"github.com/darkoatanasovski/chat/internal/platform/debug"
 	"github.com/darkoatanasovski/chat/internal/platform/health"
 	"github.com/darkoatanasovski/chat/internal/platform/logging"
 	"github.com/darkoatanasovski/chat/internal/platform/metrics"
@@ -55,8 +58,8 @@ func main() {
 	hub := realtime.NewHub(func(c *realtime.Connection, reason string) {
 		log.Info("connection evicted", "reason", reason, "user_id", c.UserID)
 	})
-	registry := realtime.NewRegistry(redisClient)
-	cache := realtime.NewMembershipCache(redisClient)
+	registry := realtime.NewRegistry(redisClient, m)
+	cache := realtime.NewMembershipCache(redisClient, m)
 
 	// Unique per instance, not just per region: once more than one gateway
 	// process can share a region (see docker-compose's gateway-eu-2), a
@@ -73,13 +76,14 @@ func main() {
 	// Namespaced by consumer group, not gatewayID — see dedup.go's doc
 	// comment for why that distinction matters now that every gateway
 	// shares one group.
-	dedup := realtime.NewDedup(redisClient, cfg.KafkaConsumerGroup)
+	dedup := realtime.NewDedup(redisClient, cfg.KafkaConsumerGroup, m)
 	membershipRepo := membership.NewRepo(controlPool)
-	publisher := realtime.NewPublisher(redisClient)
+	publisher := realtime.NewPublisher(redisClient, m)
 
 	delivery := realtime.NewDelivery(hub, cache, membershipRepo, registry, publisher, log)
 
-	consumer := kafkastorage.NewConsumer(cfg.KafkaBrokers, []string{events.TopicMessageCreated, events.TopicReactionUpdated, events.TopicReadUpdated}, cfg.KafkaConsumerGroup)
+	consumerTopics := []string{events.TopicMessageCreated, events.TopicReactionUpdated, events.TopicReadUpdated}
+	consumer := kafkastorage.NewConsumer(cfg.KafkaBrokers, consumerTopics, cfg.KafkaConsumerGroup)
 	fanout := realtime.NewFanout(consumer, delivery, dedup, m, log)
 	fanout.SetShards(cfg.FanoutShards)
 
@@ -88,6 +92,12 @@ func main() {
 			log.Error("fanout stopped", "error", err)
 		}
 	}()
+
+	lagPoller := kafkastorage.NewLagPoller(cfg.KafkaBrokers, cfg.KafkaConsumerGroup, consumerTopics, log,
+		func(topic string, partition int, lag int64) {
+			m.KafkaConsumerLagGap.WithLabelValues(topic, strconv.Itoa(partition)).Set(float64(lag))
+		})
+	go lagPoller.Run(ctx, 15*time.Second)
 
 	subscriber := realtime.NewSubscriber(redisClient, gatewayID, hub, log)
 	go func() {
@@ -107,6 +117,7 @@ func main() {
 
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("/metrics", metrics.Handler())
+	debug.Mount(metricsMux)
 
 	go func() {
 		log.Info("metrics listening", "addr", cfg.MetricsAddr)
