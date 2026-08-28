@@ -81,6 +81,7 @@ func main() {
 
 	consumer := kafkastorage.NewConsumer(cfg.KafkaBrokers, []string{events.TopicMessageCreated, events.TopicReactionUpdated, events.TopicReadUpdated}, cfg.KafkaConsumerGroup)
 	fanout := realtime.NewFanout(consumer, delivery, dedup, m, log)
+	fanout.SetShards(cfg.FanoutShards)
 
 	go func() {
 		if err := fanout.Run(ctx); err != nil && ctx.Err() == nil {
