@@ -284,7 +284,7 @@ func TestFanoutRun_EndToEnd_DifferentChannelsDeliverConcurrentlyWithRealHandle(t
 	hub := NewHub(nil)
 	registry := NewRegistry(client, nil)
 	publisher := NewPublisher(client, nil)
-	delivery := NewDelivery(hub, cache, nil, registry, publisher, discardLogger())
+	delivery := NewDelivery(hub, cache, nil, nil, nil, registry, publisher, discardLogger())
 	dedup := NewDedup(client, uuid.NewString(), nil)
 
 	ctxSetup := context.Background()

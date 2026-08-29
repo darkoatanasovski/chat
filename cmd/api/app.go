@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/darkoatanasovski/chat/internal/apps"
+	"github.com/darkoatanasovski/chat/internal/blocks"
 	"github.com/darkoatanasovski/chat/internal/channels"
 	"github.com/darkoatanasovski/chat/internal/membership"
 	"github.com/darkoatanasovski/chat/internal/messages"
@@ -63,7 +64,9 @@ type App struct {
 	messagesRepo    *messages.Repo
 	reactionsRepo   *reactions.Repo
 	readStateRepo   *readstate.Repo
+	blocksRepo      *blocks.Repo
 	membershipCache *realtime.MembershipCache
+	blocksCache     *realtime.BlocksCache
 
 	peerClient *http.Client
 }

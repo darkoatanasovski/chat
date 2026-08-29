@@ -31,6 +31,10 @@ func (a *App) routes() http.Handler {
 
 	mux.HandleFunc("GET /users/me/channels", a.instrument("list_my_channels", a.requireAuth(a.handleListMyChannels)))
 
+	mux.HandleFunc("POST /blocks", a.instrument("block_user", a.requireAuth(a.handleBlockUser)))
+	mux.HandleFunc("DELETE /blocks/{user_id}", a.instrument("unblock_user", a.requireAuth(a.handleUnblockUser)))
+	mux.HandleFunc("GET /blocks", a.instrument("list_blocks", a.requireAuth(a.handleListBlocks)))
+
 	// Dashboard: real per-person accounts (internal/orgusers) on top of the
 	// same organizations. Signup/login/accept-invite are public, matching
 	// this V1's existing trust model; everything else needs a dashboard
@@ -58,6 +62,9 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /dashboard/channels/{channel_id}/members", a.instrument("dashboard_list_channel_members", a.requireOrgUser(a.handleDashboardListChannelMembers)))
 	mux.HandleFunc("POST /dashboard/channels/{channel_id}/members", a.instrument("dashboard_add_channel_member", a.requireOrgUser(a.handleDashboardAddChannelMember)))
 	mux.HandleFunc("DELETE /dashboard/channels/{channel_id}/members/{user_id}", a.instrument("dashboard_remove_channel_member", a.requireOrgUser(a.handleDashboardRemoveChannelMember)))
+	mux.HandleFunc("GET /dashboard/apps/{app_id}/blocks", a.instrument("dashboard_list_blocks", a.requireOrgUser(a.handleDashboardListBlocks)))
+	mux.HandleFunc("POST /dashboard/apps/{app_id}/blocks", a.instrument("dashboard_block_user", a.requireOrgUser(a.handleDashboardBlockUser)))
+	mux.HandleFunc("DELETE /dashboard/apps/{app_id}/blocks/{blocker_id}/{blocked_id}", a.instrument("dashboard_unblock_user", a.requireOrgUser(a.handleDashboardUnblockUser)))
 
 	// Apps/credentials management: the dashboard calls these SAME routes
 	// directly with its org-user session token — requireOrgAuth already

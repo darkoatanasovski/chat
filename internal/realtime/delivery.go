@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/darkoatanasovski/chat/internal/blocks"
 	"github.com/darkoatanasovski/chat/internal/membership"
 )
 
@@ -18,12 +19,14 @@ import (
 // ConnectHandler's typing relay (client-driven, ephemeral) both use the same
 // Delivery instance rather than duplicating this resolution.
 type Delivery struct {
-	hub       *Hub
-	cache     *MembershipCache
-	fallback  *membership.Repo // used only on cache miss
-	registry  *Registry
-	publisher *Publisher
-	log       Logger
+	hub            *Hub
+	cache          *MembershipCache
+	fallback       *membership.Repo // used only on cache miss
+	blocksCache    *BlocksCache
+	blocksFallback *blocks.Repo // used only on cache miss
+	registry       *Registry
+	publisher      *Publisher
+	log            Logger
 }
 
 // Logger is the minimal slog.Logger surface Delivery needs, so callers don't
@@ -32,16 +35,20 @@ type Logger interface {
 	Error(msg string, args ...any)
 }
 
-func NewDelivery(hub *Hub, cache *MembershipCache, fallback *membership.Repo, registry *Registry, publisher *Publisher, log Logger) *Delivery {
-	return &Delivery{hub: hub, cache: cache, fallback: fallback, registry: registry, publisher: publisher, log: log}
+func NewDelivery(hub *Hub, cache *MembershipCache, fallback *membership.Repo, blocksCache *BlocksCache, blocksFallback *blocks.Repo, registry *Registry, publisher *Publisher, log Logger) *Delivery {
+	return &Delivery{hub: hub, cache: cache, fallback: fallback, blocksCache: blocksCache, blocksFallback: blocksFallback, registry: registry, publisher: publisher, log: log}
 }
 
 // ToChannelMembers resolves channelID's current members (cache-first,
 // Postgres fallback) and pushes frame to each, skipping exclude if it's a
 // non-nil UUID (e.g. a typing event never echoes back to its own sender —
 // message/reaction events pass uuid.Nil since the sender is expected to
-// receive its own event back over the socket).
-func (d *Delivery) ToChannelMembers(ctx context.Context, channelID uuid.UUID, frame []byte, exclude uuid.UUID) error {
+// receive its own event back over the socket) and skipping anyone who has
+// blocked, or been blocked by, actor — a message/reaction/read-state
+// update/typing signal never reaches a member on either side of a block
+// with whoever produced it, regardless of which of them initiated the
+// block.
+func (d *Delivery) ToChannelMembers(ctx context.Context, channelID uuid.UUID, frame []byte, actor, exclude uuid.UUID) error {
 	members, ok, err := d.cache.Members(ctx, channelID)
 	if err != nil {
 		return err
@@ -57,12 +64,20 @@ func (d *Delivery) ToChannelMembers(ctx context.Context, channelID uuid.UUID, fr
 		return nil
 	}
 
+	blockedWithActor, err := d.resolveBlocked(ctx, actor)
+	if err != nil {
+		return err
+	}
+
 	// This instance may hold none, some, or all of the channel's live
 	// connections — unlike V1, it can no longer assume "not local" means
 	// "not connected anywhere."
 	var remote []uuid.UUID
 	for _, userID := range members {
 		if userID == exclude {
+			continue
+		}
+		if blockedWithActor[userID] {
 			continue
 		}
 		if d.hub.HasLocalUser(userID) {
@@ -75,6 +90,43 @@ func (d *Delivery) ToChannelMembers(ctx context.Context, channelID uuid.UUID, fr
 		return d.deliverRemote(ctx, remote, frame)
 	}
 	return nil
+}
+
+// resolveBlocked returns the set of user IDs that have any block
+// relationship with actor, cache-first with a Postgres fallback — the same
+// shape as the channel-membership resolution above. uuid.Nil (no
+// meaningful actor, e.g. a system-originated frame) always resolves to an
+// empty set without touching cache or Postgres, and so does a nil
+// blocksCache/blocksFallback — both are optional the way Fanout.metrics is:
+// tests that don't care about block enforcement can leave them unset
+// instead of needing to wire (or pre-populate the cache for) a dependency
+// their scenario never exercises.
+func (d *Delivery) resolveBlocked(ctx context.Context, actor uuid.UUID) (map[uuid.UUID]bool, error) {
+	if actor == uuid.Nil || d.blocksCache == nil {
+		return nil, nil
+	}
+	blocked, ok, err := d.blocksCache.Blocked(ctx, actor)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		if d.blocksFallback == nil {
+			return nil, nil
+		}
+		blocked, err = d.blocksFallback.BlockedPairsFor(ctx, actor)
+		if err != nil {
+			return nil, err
+		}
+		_ = d.blocksCache.SetBlocked(ctx, actor, blocked)
+	}
+	if len(blocked) == 0 {
+		return nil, nil
+	}
+	out := make(map[uuid.UUID]bool, len(blocked))
+	for _, id := range blocked {
+		out[id] = true
+	}
+	return out, nil
 }
 
 // IsMember reports whether userID is currently a member of channelID —

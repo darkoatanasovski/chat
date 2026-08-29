@@ -157,14 +157,28 @@ func (r *Repo) getByClientMessageID(ctx context.Context, pool *pgxpool.Pool, cha
 // ListBefore returns up to limit messages with sequence < before, newest
 // first. before=0 starts from the most recent message. Cursor pagination
 // only — never OFFSET (INSTRUCTIONS.md §11).
-func (r *Repo) ListBefore(ctx context.Context, pool *pgxpool.Pool, channelID uuid.UUID, before int64, limit int) ([]Message, error) {
+//
+// excludeSenders filters out any message from those sender IDs — the
+// caller's blocked set (internal/blocks), applied here rather than after
+// the fact in Go so a filtered-out message doesn't quietly shrink a page
+// below limit: the WHERE clause and LIMIT are evaluated together, exactly
+// like every other predicate on this query. nil/empty excludes nothing —
+// `!= ALL(ARRAY[]::uuid[])` is vacuously true for every row — but pgx
+// encodes a nil Go slice as SQL NULL, not an empty array, and
+// `!= ALL(NULL)` evaluates to NULL (excludes everything) rather than true,
+// so a nil excludeSenders is normalized to a non-nil empty slice before
+// this ever reaches the query.
+func (r *Repo) ListBefore(ctx context.Context, pool *pgxpool.Pool, channelID uuid.UUID, before int64, limit int, excludeSenders []uuid.UUID) ([]Message, error) {
+	if excludeSenders == nil {
+		excludeSenders = []uuid.UUID{}
+	}
 	rows, err := pool.Query(ctx, `
 		SELECT channel_id, sequence, message_id, sender_id, client_message_id, body, created_at, reaction_counts, latest_reactions
 		FROM messages
-		WHERE channel_id = $1 AND ($2 = 0 OR sequence < $2)
+		WHERE channel_id = $1 AND ($2 = 0 OR sequence < $2) AND sender_id != ALL($4::uuid[])
 		ORDER BY sequence DESC
 		LIMIT $3
-	`, channelID, before, limit)
+	`, channelID, before, limit, excludeSenders)
 	if err != nil {
 		return nil, fmt.Errorf("messages: list before: %w", err)
 	}

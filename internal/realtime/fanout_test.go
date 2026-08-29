@@ -62,7 +62,7 @@ func TestFanout_DeliversLocalAndRemoteMembers(t *testing.T) {
 	go subscriber.Run(subCtx)
 	waitForSubscriber(t, client, gatewayChannel(remoteGatewayID))
 
-	delivery := NewDelivery(hubHere, cache, nil, registry, publisher, discardLogger())
+	delivery := NewDelivery(hubHere, cache, nil, nil, nil, registry, publisher, discardLogger())
 	fanout := NewFanout(nil, delivery, NewDedup(client, uuid.NewString(), nil), nil, discardLogger())
 
 	payload := events.MessageCreatedPayload{
@@ -106,7 +106,7 @@ func TestFanout_MemberWithNoLiveConnectionIsSkipped(t *testing.T) {
 	hub := NewHub(nil)
 	registry := NewRegistry(client, nil)
 	publisher := NewPublisher(client, nil)
-	delivery := NewDelivery(hub, cache, nil, registry, publisher, discardLogger())
+	delivery := NewDelivery(hub, cache, nil, nil, nil, registry, publisher, discardLogger())
 	fanout := NewFanout(nil, delivery, NewDedup(client, uuid.NewString(), nil), nil, discardLogger())
 
 	payload := events.MessageCreatedPayload{
@@ -146,7 +146,7 @@ func TestFanout_DeliversReactionUpdated(t *testing.T) {
 
 	registry := NewRegistry(client, nil)
 	publisher := NewPublisher(client, nil)
-	delivery := NewDelivery(hub, cache, nil, registry, publisher, discardLogger())
+	delivery := NewDelivery(hub, cache, nil, nil, nil, registry, publisher, discardLogger())
 	fanout := NewFanout(nil, delivery, NewDedup(client, uuid.NewString(), nil), nil, discardLogger())
 
 	payload := events.ReactionUpdatedPayload{
@@ -193,7 +193,7 @@ func TestFanout_ReactionUpdatedDedupsByEventID(t *testing.T) {
 
 	registry := NewRegistry(client, nil)
 	publisher := NewPublisher(client, nil)
-	delivery := NewDelivery(hub, cache, nil, registry, publisher, discardLogger())
+	delivery := NewDelivery(hub, cache, nil, nil, nil, registry, publisher, discardLogger())
 	fanout := NewFanout(nil, delivery, NewDedup(client, uuid.NewString(), nil), nil, discardLogger())
 
 	payload := events.ReactionUpdatedPayload{
@@ -239,7 +239,7 @@ func TestFanout_DeliversReadUpdated(t *testing.T) {
 
 	registry := NewRegistry(client, nil)
 	publisher := NewPublisher(client, nil)
-	delivery := NewDelivery(hub, cache, nil, registry, publisher, discardLogger())
+	delivery := NewDelivery(hub, cache, nil, nil, nil, registry, publisher, discardLogger())
 	fanout := NewFanout(nil, delivery, NewDedup(client, uuid.NewString(), nil), nil, discardLogger())
 
 	payload := events.ReadUpdatedPayload{
@@ -276,7 +276,7 @@ func TestFanout_ReadUpdatedDedupsByEventID(t *testing.T) {
 
 	registry := NewRegistry(client, nil)
 	publisher := NewPublisher(client, nil)
-	delivery := NewDelivery(hub, cache, nil, registry, publisher, discardLogger())
+	delivery := NewDelivery(hub, cache, nil, nil, nil, registry, publisher, discardLogger())
 	fanout := NewFanout(nil, delivery, NewDedup(client, uuid.NewString(), nil), nil, discardLogger())
 
 	payload := events.ReadUpdatedPayload{EventID: uuid.New(), ChannelID: channelID, UserID: localUser, LastReadSequence: 3}

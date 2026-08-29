@@ -205,7 +205,7 @@ func (h *ConnectHandler) relayTyping(ctx context.Context, userID, channelID uuid
 		h.log.Warn("typing: marshal frame", "error", err)
 		return
 	}
-	if err := h.delivery.ToChannelMembers(ctx, channelID, frame, userID); err != nil {
+	if err := h.delivery.ToChannelMembers(ctx, channelID, frame, userID, userID); err != nil {
 		h.log.Warn("typing: relay", "error", err)
 	}
 }
