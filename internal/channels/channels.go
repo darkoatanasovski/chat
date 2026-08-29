@@ -151,6 +151,44 @@ func (r *Repo) CountByApp(ctx context.Context, appID int64) (int, error) {
 	return count, nil
 }
 
+// ChannelRouteInfo is the lean per-channel routing data the dashboard's
+// message-count view needs: which app it belongs to, which region it's
+// homed in, and which virtual shard to look it up on — all already stored
+// at creation time (see the package doc comment), so this never joins
+// beyond the channels table itself.
+type ChannelRouteInfo struct {
+	ChannelID    uuid.UUID
+	AppID        int64
+	HomeRegion   string
+	VirtualShard int
+}
+
+// ListRouteInfoByApps backs the dashboard's messages-sent view — every
+// channel across a set of an org's apps, grouped in one query rather than
+// one round trip per app (same convention as users.Repo.CountByRegion).
+func (r *Repo) ListRouteInfoByApps(ctx context.Context, appIDs []int64) ([]ChannelRouteInfo, error) {
+	if len(appIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT channel_id, app_id, home_region, virtual_shard FROM channels WHERE app_id = ANY($1)
+	`, appIDs)
+	if err != nil {
+		return nil, fmt.Errorf("channels: list route info by apps: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ChannelRouteInfo
+	for rows.Next() {
+		var c ChannelRouteInfo
+		if err := rows.Scan(&c.ChannelID, &c.AppID, &c.HomeRegion, &c.VirtualShard); err != nil {
+			return nil, fmt.Errorf("channels: list route info by apps: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // RouteSource adapts Repo.Get for routing.RegionResolver's fallback.
 func (r *Repo) RouteSource(ctx context.Context, channelID string) (routing.ChannelRoute, error) {
 	id, err := uuid.Parse(channelID)

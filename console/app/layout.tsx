@@ -5,7 +5,7 @@ import { ToastProvider } from "@/components/toast";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Chat Platform Dashboard",
+  title: "Chat Platform Console",
   description: "Manage your organization's apps, API keys, team, and usage",
 };
 

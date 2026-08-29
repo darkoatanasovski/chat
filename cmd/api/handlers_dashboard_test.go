@@ -311,3 +311,51 @@ func TestDashboardRegions_CountsEndUsersByRegionScopedToOwnOrg(t *testing.T) {
 		}
 	}
 }
+
+// TestDashboardMessages_SumsSentMessagesByRegionScopedToOwnOrg exercises the
+// Overview page's messages-sent stat end to end: it reads exact per-channel
+// message counts off channel_sequences on the shard databases (never
+// scanning the messages table itself — see messages.Repo.SumSequencesByChannels)
+// and must never leak another org's message counts into the total.
+func TestDashboardMessages_SumsSentMessagesByRegionScopedToOwnOrg(t *testing.T) {
+	app := testApp(t)
+	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Messages Org", "PRO")
+	_, key, secret := createTestApp(t, app, orgID, ownerToken)
+
+	var user createUserResponse
+	rec := do(t, app, basicAuthed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "Sender", Region: "eu"}), key, secret), &user)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create test user: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	channel := createTestChannel(t, app, user.Token, "general")
+	for i := range 3 {
+		sendTestMessage(t, app, user.Token, channel.ChannelID, fmt.Sprintf("message %d", i))
+	}
+
+	var messages dashboardMessagesResponse
+	rec = do(t, app, authed(jsonRequest("GET", "/dashboard/messages", nil), ownerToken), &messages)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if messages.Total != 3 {
+		t.Fatalf("expected total=3, got %+v", messages)
+	}
+	got := map[string]int64{}
+	for _, r := range messages.ByRegion {
+		got[r.Region] = r.Messages
+	}
+	// Test channels always home to the test API instance's own region (see
+	// buildTestApp's Region: "eu") since home_region isn't caller-supplied.
+	if got["eu"] != 3 || got["us"] != 0 || got["asia"] != 0 {
+		t.Fatalf("unexpected region counts: %+v", got)
+	}
+
+	// A second org's dashboard token must see nothing from the first org's messages.
+	otherToken, _, _ := signUpDashboardOrg(t, app, "Other Messages Org", "FREE")
+	var otherMessages dashboardMessagesResponse
+	do(t, app, authed(jsonRequest("GET", "/dashboard/messages", nil), otherToken), &otherMessages)
+	if otherMessages.Total != 0 {
+		t.Fatalf("expected a brand-new org to see zero messages, got %+v", otherMessages)
+	}
+}

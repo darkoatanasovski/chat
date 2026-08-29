@@ -3,7 +3,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useParams } from "next/navigation";
 import { motion } from "framer-motion";
-import { ArrowLeft, Check, Copy, Hash, KeyRound, MessagesSquare, Plus, Trash2, Users as UsersIcon, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Copy, Hash, KeyRound, MessagesSquare, Plus, ShieldOff, Trash2, Users as UsersIcon, X } from "lucide-react";
 import {
   addChannelMember,
   createCredential,
@@ -12,22 +12,23 @@ import {
   listApps,
   listChannelMembers,
   listCredentials,
+  listDashboardBlocks,
   listDashboardChannels,
   listEndUsers,
   removeChannelMember,
   revokeCredential,
   ApiError,
 } from "@/lib/api";
-import type { AppSummary, ChannelMember, Credential, DashboardChannel, EndUser } from "@/lib/types";
-import { DashboardShell, useSession } from "@/components/shell";
+import type { AppSummary, ChannelMember, Credential, DashboardBlock, DashboardChannel, EndUser } from "@/lib/types";
+import { ConsoleShell, useSession } from "@/components/shell";
 import { useToast } from "@/components/toast";
-import { Badge, Button, ErrorBanner, Input, Label, Modal, Panel, Select, Skeleton } from "@/components/ui";
+import { Avatar, Badge, Button, ErrorBanner, Input, Label, Modal, Panel, Select, Skeleton } from "@/components/ui";
 
 export default function AppDetailPage() {
   return (
-    <DashboardShell>
+    <ConsoleShell>
       <AppDetailView />
-    </DashboardShell>
+    </ConsoleShell>
   );
 }
 
@@ -35,6 +36,7 @@ const TABS = [
   { id: "credentials", label: "Credentials" },
   { id: "users", label: "End-users" },
   { id: "channels", label: "Channels" },
+  { id: "blocks", label: "Blocks" },
 ] as const;
 
 type TabID = (typeof TABS)[number]["id"];
@@ -88,6 +90,7 @@ function AppDetailView() {
       {tab === "credentials" && <CredentialsTab appId={appId} />}
       {tab === "users" && <EndUsersTab appId={appId} />}
       {tab === "channels" && <ChannelsTab appId={appId} />}
+      {tab === "blocks" && <BlocksTab appId={appId} />}
     </div>
   );
 }
@@ -707,6 +710,71 @@ function ManageMembersModal({
         </div>
       </div>
     </Modal>
+  );
+}
+
+// ---- Blocks ----
+
+function BlocksTab({ appId }: { appId: number }) {
+  const { session } = useSession();
+  const [blocks, setBlocks] = useState<DashboardBlock[] | null>(null);
+  const [names, setNames] = useState<Map<string, string>>(new Map());
+  const [error, setError] = useState<string | null>(null);
+
+  function refresh() {
+    listDashboardBlocks(session.token, appId)
+      .then(setBlocks)
+      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
+    listEndUsers(session.token, appId)
+      .then((users) => setNames(new Map(users.map((u) => [u.user_id, u.display_name]))))
+      .catch(() => {});
+  }
+
+  useEffect(refresh, [session.token, appId]);
+
+  return (
+    <div>
+      {error && (
+        <div className="mb-5">
+          <ErrorBanner>{error}</ErrorBanner>
+        </div>
+      )}
+
+      <Panel animate={false}>
+        {blocks === null && (
+          <div className="flex flex-col gap-2">
+            <Skeleton className="h-16" />
+            <Skeleton className="h-16" />
+          </div>
+        )}
+        {blocks?.length === 0 && <EmptyState text="No blocks for this app." />}
+        <div className="flex flex-col gap-2">
+          {blocks?.map((b, i) => (
+            <motion.div
+              key={`${b.blocker_user_id}-${b.blocked_user_id}`}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: i * 0.03 }}
+              className="flex items-center gap-3.5 rounded-xl border border-border-soft px-4 py-3.5"
+            >
+              <BlockedUser userId={b.blocker_user_id} name={names.get(b.blocker_user_id)} />
+              <ArrowRight className="h-4 w-4 shrink-0 text-text-faint" />
+              <BlockedUser userId={b.blocked_user_id} name={names.get(b.blocked_user_id)} />
+            </motion.div>
+          ))}
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function BlockedUser({ userId, name }: { userId: string; name: string | undefined }) {
+  const label = name ?? `${userId.slice(0, 8)}…`;
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-2.5">
+      <Avatar name={label} size="sm" />
+      <span className="truncate text-[15px] text-text">{label}</span>
+    </div>
   );
 }
 

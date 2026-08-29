@@ -4,11 +4,14 @@ import type {
   ChannelMember,
   Credential,
   CreatedApp,
+  DashboardBlock,
   DashboardChannel,
   DashboardOrg,
   DashboardUser,
   EndUser,
   Invite,
+  MessagesUsage,
+  RegionMessages,
   RegionUsage,
   Session,
   TeamMember,
@@ -122,6 +125,10 @@ export function getRegionUsage(token: string) {
   return request<RegionUsage[]>("/dashboard/regions", { token });
 }
 
+export function getMessagesUsage(token: string) {
+  return request<MessagesUsage>("/dashboard/messages", { token });
+}
+
 export function listEndUsers(token: string, appId: number) {
   return request<EndUser[]>(`/dashboard/apps/${appId}/users`, { token });
 }
@@ -162,4 +169,23 @@ export function removeChannelMember(token: string, channelId: string, userId: st
   return request<void>(`/dashboard/channels/${channelId}/members/${userId}`, { method: "DELETE", token });
 }
 
-export type { AppSummary, AppUsage, ChannelMember, Credential, CreatedApp, DashboardChannel, EndUser, Invite, RegionUsage, TeamMember, Usage };
+export function listDashboardBlocks(token: string, appId: number) {
+  return request<DashboardBlock[]>(`/dashboard/apps/${appId}/blocks`, { token });
+}
+
+export type {
+  AppSummary,
+  AppUsage,
+  ChannelMember,
+  Credential,
+  CreatedApp,
+  DashboardBlock,
+  DashboardChannel,
+  EndUser,
+  Invite,
+  MessagesUsage,
+  RegionMessages,
+  RegionUsage,
+  TeamMember,
+  Usage,
+};

@@ -549,3 +549,86 @@ func (a *App) handleDashboardRegions(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+
+// ---- messages (overview stat) ----
+
+type regionMessagesEntry struct {
+	Region   string `json:"region"`
+	Messages int64  `json:"messages"`
+}
+
+type dashboardMessagesResponse struct {
+	Total    int64                 `json:"total"`
+	ByRegion []regionMessagesEntry `json:"by_region"`
+}
+
+// handleDashboardMessages backs the Overview page's messages-sent stat:
+// total messages across the org's apps, broken down by region. Message
+// counts live on the shard databases (channel_sequences.last_sequence, one
+// row per channel, incremented on every send — see internal/messages), not
+// the control plane, so this does a bounded scatter-gather over the small,
+// fixed number of physical shards. That's a deliberate, documented
+// exception to "no scatter-gather on hot paths" (INSTRUCTIONS.md §6): it
+// never runs on the message-send path, only on this low-frequency admin
+// read, same class as CountByRegion above.
+func (a *App) handleDashboardMessages(w http.ResponseWriter, r *http.Request) {
+	orgIdentity, _ := orgIdentityFromContext(r.Context())
+
+	appList, err := a.appsRepo.ListByOrg(r.Context(), orgIdentity.OrgID)
+	if err != nil {
+		a.log.Error("list apps", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load message usage")
+		return
+	}
+	appIDs := make([]int64, len(appList))
+	for i, app := range appList {
+		appIDs[i] = app.AppID
+	}
+
+	routeInfo, err := a.channelsRepo.ListRouteInfoByApps(r.Context(), appIDs)
+	if err != nil {
+		a.log.Error("list channel route info", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load message usage")
+		return
+	}
+
+	channelsByShard := map[string][]uuid.UUID{}
+	regionByChannel := map[uuid.UUID]string{}
+	for _, c := range routeInfo {
+		shardID, err := a.router.PhysicalShardID(c.VirtualShard)
+		if err != nil {
+			a.log.Error("resolve physical shard", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to load message usage")
+			return
+		}
+		channelsByShard[shardID] = append(channelsByShard[shardID], c.ChannelID)
+		regionByChannel[c.ChannelID] = c.HomeRegion
+	}
+
+	counts := map[string]int64{}
+	var total int64
+	for shardID, channelIDs := range channelsByShard {
+		pool, err := a.shardPools.Get(shardID)
+		if err != nil {
+			a.log.Error("resolve shard pool", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to load message usage")
+			return
+		}
+		sums, err := a.messagesRepo.SumSequencesByChannels(r.Context(), pool, channelIDs)
+		if err != nil {
+			a.log.Error("sum message sequences", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to load message usage")
+			return
+		}
+		for channelID, count := range sums {
+			counts[regionByChannel[channelID]] += count
+			total += count
+		}
+	}
+
+	out := make([]regionMessagesEntry, len(dashboardRegionOrder))
+	for i, region := range dashboardRegionOrder {
+		out[i] = regionMessagesEntry{Region: region, Messages: counts[region]}
+	}
+	writeJSON(w, http.StatusOK, dashboardMessagesResponse{Total: total, ByRegion: out})
+}

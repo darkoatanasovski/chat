@@ -45,6 +45,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /dashboard/me", a.instrument("dashboard_me", a.requireOrgUser(a.handleDashboardMe)))
 	mux.HandleFunc("GET /dashboard/usage", a.instrument("dashboard_usage", a.requireOrgUser(a.handleDashboardUsage)))
 	mux.HandleFunc("GET /dashboard/regions", a.instrument("dashboard_regions", a.requireOrgUser(a.handleDashboardRegions)))
+	mux.HandleFunc("GET /dashboard/messages", a.instrument("dashboard_messages", a.requireOrgUser(a.handleDashboardMessages)))
 	mux.HandleFunc("GET /dashboard/team", a.instrument("dashboard_list_team", a.requireOrgUser(a.handleListTeam)))
 	mux.HandleFunc("POST /dashboard/team/invites", a.instrument("dashboard_create_invite", a.requireOwnerRole(a.handleCreateInvite)))
 	mux.HandleFunc("GET /dashboard/team/invites", a.instrument("dashboard_list_invites", a.requireOwnerRole(a.handleListInvites)))

@@ -5,15 +5,15 @@ import { motion } from "framer-motion";
 import { Boxes, Check, Copy, KeyRound, Plus } from "lucide-react";
 import { createApp, listApps, ApiError } from "@/lib/api";
 import type { AppSummary, CreatedApp } from "@/lib/types";
-import { DashboardShell, useSession } from "@/components/shell";
+import { ConsoleShell, useSession } from "@/components/shell";
 import { useToast } from "@/components/toast";
 import { Button, ErrorBanner, Input, Label, Modal, Panel, Skeleton } from "@/components/ui";
 
 export default function AppsPage() {
   return (
-    <DashboardShell>
+    <ConsoleShell>
       <AppsView />
-    </DashboardShell>
+    </ConsoleShell>
   );
 }
 
