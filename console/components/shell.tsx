@@ -18,16 +18,16 @@ const NAV_ITEMS = [
 
 const SessionContext = createContext<{ session: Session; setSession: (s: Session) => void } | null>(null);
 
-/** Reads the current dashboard session — must be called from a page rendered
- * inside <DashboardShell>, which guarantees a session exists by the time
+/** Reads the current console session — must be called from a page rendered
+ * inside <ConsoleShell>, which guarantees a session exists by the time
  * children render at all. */
 export function useSession() {
   const ctx = useContext(SessionContext);
-  if (!ctx) throw new Error("useSession must be used within DashboardShell");
+  if (!ctx) throw new Error("useSession must be used within ConsoleShell");
   return ctx;
 }
 
-export function DashboardShell({ children }: { children: ReactNode }) {
+export function ConsoleShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const [session, setSessionState] = useState<Session | null | undefined>(undefined);

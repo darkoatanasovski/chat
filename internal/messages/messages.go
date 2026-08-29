@@ -199,6 +199,36 @@ func (r *Repo) ListBefore(ctx context.Context, pool *pgxpool.Pool, channelID uui
 	return out, rows.Err()
 }
 
+// SumSequencesByChannels backs the dashboard's messages-sent view. Every
+// message send increments channel_sequences.last_sequence for its channel
+// (see the Send transaction below), so that column already IS the exact
+// message count per channel — reading it here means this never has to scan
+// the messages table itself. Channels absent from the result sent no
+// messages; the caller treats them as 0, same convention as
+// users.Repo.CountByRegion.
+func (r *Repo) SumSequencesByChannels(ctx context.Context, pool *pgxpool.Pool, channelIDs []uuid.UUID) (map[uuid.UUID]int64, error) {
+	counts := map[uuid.UUID]int64{}
+	if len(channelIDs) == 0 {
+		return counts, nil
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT channel_id, last_sequence FROM channel_sequences WHERE channel_id = ANY($1)
+	`, channelIDs)
+	if err != nil {
+		return nil, fmt.Errorf("messages: sum sequences by channels: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		var seq int64
+		if err := rows.Scan(&id, &seq); err != nil {
+			return nil, fmt.Errorf("messages: sum sequences by channels: %w", err)
+		}
+		counts[id] = seq
+	}
+	return counts, rows.Err()
+}
+
 func unmarshalReactionState(m *Message, countsRaw, latestRaw []byte) error {
 	if err := json.Unmarshal(countsRaw, &m.ReactionCounts); err != nil {
 		return fmt.Errorf("messages: unmarshal reaction_counts: %w", err)

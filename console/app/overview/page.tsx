@@ -1,19 +1,23 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { motion } from "framer-motion";
-import { ArrowUpRight, Boxes, MessagesSquare, Users as UsersIcon } from "lucide-react";
-import { getUsage, ApiError } from "@/lib/api";
-import type { Usage } from "@/lib/types";
-import { DashboardShell, useSession } from "@/components/shell";
+import { AnimatePresence, motion } from "framer-motion";
+import { ArrowUpRight, Boxes, ChevronDown, MessagesSquare, Send, ShieldOff, Users as UsersIcon } from "lucide-react";
+import { getMessagesUsage, getUsage, listApps, listDashboardBlocks, ApiError } from "@/lib/api";
+import type { MessagesUsage, Usage } from "@/lib/types";
+import { ConsoleShell, useSession } from "@/components/shell";
 import { WorldMap } from "@/components/worldmap";
 import { AnimatedNumber, ErrorBanner, Panel, Skeleton } from "@/components/ui";
 
+function regionLabel(region: string) {
+  return { eu: "Europe", us: "North America", asia: "Asia Pacific" }[region] ?? region;
+}
+
 export default function OverviewPage() {
   return (
-    <DashboardShell>
+    <ConsoleShell>
       <OverviewView />
-    </DashboardShell>
+    </ConsoleShell>
   );
 }
 
@@ -45,7 +49,9 @@ function OverviewView() {
       )}
 
       {!usage && !error && (
-        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          <Skeleton className="h-32" />
+          <Skeleton className="h-32" />
           <Skeleton className="h-32" />
           <Skeleton className="h-32" />
           <Skeleton className="h-32" />
@@ -53,7 +59,7 @@ function OverviewView() {
       )}
 
       {usage && (
-        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
           <StatCard
             index={0}
             icon={<Boxes className="h-5 w-5" />}
@@ -64,6 +70,8 @@ function OverviewView() {
           />
           <StatCard index={1} icon={<UsersIcon className="h-5 w-5" />} label="End-users" value={totalUsers} subtitle="across all apps" />
           <StatCard index={2} icon={<MessagesSquare className="h-5 w-5" />} label="Channels" value={totalChannels} subtitle="across all apps" />
+          <MessagesStatCard index={3} />
+          <BlockedStatCard index={4} />
         </div>
       )}
 
@@ -145,6 +153,108 @@ function StatCard({
           {suffix && <span className="text-xl text-text-faint">{suffix}</span>}
         </div>
         <div className="mt-1.5 text-sm text-text-faint">{subtitle}</div>
+      </Panel>
+    </motion.div>
+  );
+}
+
+function BlockedStatCard({ index }: { index: number }) {
+  const { session } = useSession();
+  const [total, setTotal] = useState<number | null>(null);
+
+  useEffect(() => {
+    listApps(session.token, session.org.org_id)
+      .then((apps) => Promise.all(apps.map((app) => listDashboardBlocks(session.token, app.app_id))))
+      .then((perApp) => setTotal(perApp.reduce((sum, blocks) => sum + blocks.length, 0)))
+      .catch(() => {});
+  }, [session.token, session.org.org_id]);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.06, duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+    >
+      <Panel animate={false} className="transition-colors duration-150 hover:border-accent/25">
+        <div className="mb-4 flex items-center gap-3">
+          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-danger-soft text-danger">
+            <ShieldOff className="h-5 w-5" />
+          </span>
+          <span className="text-[13px] font-medium uppercase tracking-wide text-text-muted">Blocked</span>
+        </div>
+        <AnimatedNumber value={total ?? 0} className="text-4xl font-semibold text-text" />
+        <div className="mt-1.5 text-sm text-text-faint">users across all apps</div>
+      </Panel>
+    </motion.div>
+  );
+}
+
+function MessagesStatCard({ index }: { index: number }) {
+  const { session } = useSession();
+  const [usage, setUsage] = useState<MessagesUsage | null>(null);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    getMessagesUsage(session.token)
+      .then(setUsage)
+      .catch(() => {});
+  }, [session.token]);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.06, duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+    >
+      <Panel animate={false} className="transition-colors duration-150 hover:border-accent/25">
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          disabled={!usage}
+          className="flex w-full items-center justify-between gap-3 text-left disabled:cursor-default"
+        >
+          <div className="flex items-center gap-3">
+            <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-accent-soft text-accent">
+              <Send className="h-5 w-5" />
+            </span>
+            <span className="text-[13px] font-medium uppercase tracking-wide text-text-muted">Messages</span>
+          </div>
+          {usage && (
+            <motion.span animate={{ rotate: expanded ? 180 : 0 }} transition={{ duration: 0.2 }} className="text-text-faint">
+              <ChevronDown className="h-4 w-4" />
+            </motion.span>
+          )}
+        </button>
+        <div className="mt-4 flex items-baseline gap-1.5">
+          <AnimatedNumber value={usage?.total ?? 0} className="text-4xl font-semibold text-text" />
+        </div>
+        <div className="mt-1.5 text-sm text-text-faint">sent across all apps</div>
+
+        <AnimatePresence initial={false}>
+          {expanded && usage && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+              className="overflow-hidden"
+            >
+              <div className="mt-5 flex flex-col gap-2.5 border-t border-border-soft pt-4">
+                {usage.by_region.map((r, i) => (
+                  <motion.div
+                    key={r.region}
+                    initial={{ opacity: 0, x: -4 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: i * 0.04 }}
+                    className="flex items-center justify-between text-[13px]"
+                  >
+                    <span className="text-text-muted">{regionLabel(r.region)}</span>
+                    <AnimatedNumber value={r.messages} className="font-mono text-text" />
+                  </motion.div>
+                ))}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </Panel>
     </motion.div>
   );

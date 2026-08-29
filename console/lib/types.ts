@@ -93,3 +93,18 @@ export interface ChannelMember {
   user_id: string;
   display_name: string;
 }
+
+export interface DashboardBlock {
+  blocker_user_id: string;
+  blocked_user_id: string;
+}
+
+export interface RegionMessages {
+  region: string;
+  messages: number;
+}
+
+export interface MessagesUsage {
+  total: number;
+  by_region: RegionMessages[];
+}

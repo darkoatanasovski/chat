@@ -2,7 +2,7 @@
 
 import type { Session } from "./types";
 
-const SESSION_KEY = "dashboard-session";
+const SESSION_KEY = "console-session";
 
 export function loadSession(): Session | null {
   if (typeof window === "undefined") return null;

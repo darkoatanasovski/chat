@@ -85,7 +85,7 @@ func Load() (Config, error) {
 		c.FanoutShards = n
 	}
 
-	// :3000 is the demo/ chat test harness, :3001 is the dashboard/ app.
+	// :3000 is the demo/ chat test harness, :3001 is the console/ app.
 	origins := getenvDefault("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001")
 	c.CORSAllowedOrigins = strings.Split(origins, ",")
 

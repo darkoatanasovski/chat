@@ -5,15 +5,15 @@ import { motion } from "framer-motion";
 import { Check, Clock, Copy, Mail, Plus, Trash2, Users } from "lucide-react";
 import { createInvite, listInvites, listTeam, removeTeamMember, ApiError } from "@/lib/api";
 import type { Invite, TeamMember } from "@/lib/types";
-import { DashboardShell, useSession } from "@/components/shell";
+import { ConsoleShell, useSession } from "@/components/shell";
 import { useToast } from "@/components/toast";
 import { Avatar, Badge, Button, ErrorBanner, Input, Label, Modal, Panel, Select, Skeleton } from "@/components/ui";
 
 export default function TeamPage() {
   return (
-    <DashboardShell>
+    <ConsoleShell>
       <TeamView />
-    </DashboardShell>
+    </ConsoleShell>
   );
 }
 
