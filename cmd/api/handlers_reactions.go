@@ -118,6 +118,7 @@ func (a *App) handleAddReaction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to add reaction")
 		return
 	}
+	a.touchPresence(identity.UserID)
 
 	writeJSON(w, http.StatusOK, reactionStateResponse{ReactionCounts: counts, LatestReactions: toReactionSummaryResponse(latest)})
 }
@@ -176,6 +177,7 @@ func (a *App) handleRemoveReaction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to remove reaction")
 		return
 	}
+	a.touchPresence(identity.UserID)
 
 	writeJSON(w, http.StatusOK, reactionStateResponse{ReactionCounts: counts, LatestReactions: toReactionSummaryResponse(latest)})
 }

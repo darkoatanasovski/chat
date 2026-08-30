@@ -23,16 +23,20 @@ import (
 // ---- end-users ----
 
 type dashboardEndUserResponse struct {
-	UserID      string `json:"user_id"`
-	DisplayName string `json:"display_name"`
-	Region      string `json:"region"`
-	CreatedAt   string `json:"created_at"`
+	UserID      string         `json:"user_id"`
+	DisplayName string         `json:"display_name"`
+	Region      string         `json:"region"`
+	CreatedAt   string         `json:"created_at"`
+	Status      statusResponse `json:"status"`
 }
 
 func toDashboardEndUserResponse(u users.User) dashboardEndUserResponse {
 	return dashboardEndUserResponse{
-		UserID: u.UserID.String(), DisplayName: u.DisplayName, Region: u.HomeRegion,
-		CreatedAt: u.CreatedAt.Format(rfc3339Milli),
+		UserID:      u.UserID.String(),
+		DisplayName: u.DisplayName,
+		Region:      u.HomeRegion,
+		CreatedAt:   u.CreatedAt.Format(rfc3339Milli),
+		Status:      buildStatus(u.LastActiveAt),
 	}
 }
 
@@ -265,7 +269,7 @@ func (a *App) handleDashboardListChannelMembers(w http.ResponseWriter, r *http.R
 	}
 	out := make([]memberResponse, len(members))
 	for i, m := range members {
-		out[i] = memberResponse{UserID: m.UserID.String(), DisplayName: m.DisplayName}
+		out[i] = memberResponse{UserID: m.UserID.String(), DisplayName: m.DisplayName, Status: buildStatus(m.LastActiveAt)}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -334,7 +338,7 @@ func (a *App) handleDashboardAddChannelMember(w http.ResponseWriter, r *http.Req
 	if err := a.membershipCache.AddMember(r.Context(), ch.ChannelID, newMemberID); err != nil {
 		a.log.Warn("update membership cache", "error", err)
 	}
-	writeJSON(w, http.StatusCreated, memberResponse{UserID: newMemberID.String(), DisplayName: member.DisplayName})
+	writeJSON(w, http.StatusCreated, memberResponse{UserID: newMemberID.String(), DisplayName: member.DisplayName, Status: buildStatus(member.LastActiveAt)})
 }
 
 // handleDashboardRemoveChannelMember backs

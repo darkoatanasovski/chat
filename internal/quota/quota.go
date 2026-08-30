@@ -84,6 +84,16 @@ func (q *Quota) AllowRate(ctx context.Context, tier, capability, subjectKey stri
 		perMinute = limits.ReactionsPerMinute
 	case CapabilityReadUpdate:
 		perMinute = limits.ReadUpdatesPerMinute
+	case CapabilityPollCreate:
+		perMinute = limits.PollsPerMinute
+	case CapabilityPollVote:
+		perMinute = limits.PollVotesPerMinute
+	case CapabilityMessageEdit:
+		perMinute = limits.MessageEditsPerMinute
+	case CapabilityMessagePin:
+		perMinute = limits.MessagePinsPerMinute
+	case CapabilityBookmarkWrite:
+		perMinute = limits.BookmarksPerMinute
 	default:
 		return Decision{}, fmt.Errorf("quota: %q is not a rate capability", capability)
 	}

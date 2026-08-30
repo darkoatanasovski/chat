@@ -1,0 +1,1791 @@
+openapi: 3.1.0
+info:
+  title: Chat Platform API
+  version: "1.0.0"
+  description: >-
+    Multi-region, real-time chat infrastructure. This spec covers the
+    customer-facing REST API only (organizations, apps, credentials,
+    end-users, channels, messages, reactions, polls, read state, blocks) —
+    it does not cover the /dashboard/* endpoints, which exist solely to
+    power the first-party console and are not part of the public contract.
+
+
+    Two callers use this API, and every operation is tagged `x-sdk-scope`
+    to say which one it's for:
+
+
+    - **server** — your backend, authenticating with an App's key/secret
+      (HTTP Basic) or an org-admin bearer token. Creates apps, credentials,
+      and end-users. Should never run in a browser or mobile client — these
+      credentials are long-lived secrets.
+    - **client** — an end-user's own device (web/mobile), authenticating
+      with the short-lived bearer token your backend receives from
+      `POST /users` and hands to that end-user. Sends messages, joins
+      channels, reacts, reads.
+
+
+    Real-time delivery (typing, live message push) is a separate WebSocket
+    service (`/connect` on the gateway) and is not describable in OpenAPI —
+    see each SDK's `realtime` module, which is hand-written rather than
+    generated.
+  license:
+    name: MIT
+
+servers:
+  - url: https://api.example.com
+    description: Production (replace with your deployed API's base URL)
+  - url: http://localhost:8081
+    description: Local development (cmd/api, default port)
+
+tags:
+  - name: organizations
+    description: Top of the trust chain — create an org, get an org-admin token.
+  - name: apps
+    description: Isolated chat instances within an org, each with its own end-users, channels, and API credentials.
+  - name: credentials
+    description: An app's API key/secret pairs (server-side auth).
+  - name: users
+    description: End-user identities within an app.
+  - name: channels
+    description: Channels and their membership.
+  - name: messages
+    description: Sending and reading channel messages.
+  - name: reactions
+    description: Reacting to messages.
+  - name: polls
+    description: >-
+      Standalone poll entities a message can attach via poll_id — created,
+      fetched, and voted on independently of the message that references
+      them.
+  - name: read-state
+    description: Per-user read watermarks.
+  - name: blocks
+    description: End-user to end-user blocking.
+  - name: pins
+    description: >-
+      Channel-shared pinned messages — any channel member may pin or
+      unpin; there's no separate channel-owner role for this in the API.
+  - name: bookmarks
+    description: >-
+      A user's own private, folder-organized saved messages. Never
+      visible to, or shared with, anyone else — the opposite of a pin.
+
+security: []
+
+paths:
+  /organizations:
+    post:
+      operationId: createOrganization
+      tags: [organizations]
+      x-sdk-scope: server
+      summary: Create an organization
+      description: >-
+        Public, unauthenticated — the top of the trust chain. Mints the
+        org-admin bearer token used to create and manage this org's apps
+        and their credentials. Treat the returned token like any other
+        long-lived secret.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  maxLength: 128
+                tier:
+                  type: string
+                  description: Defaults to `FREE` if omitted.
+                  enum: [FREE, PRO, BUSINESS, ENTERPRISE]
+      responses:
+        "201":
+          description: Organization created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationWithToken"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /organizations/{org_id}/apps:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    post:
+      operationId: createApp
+      tags: [apps]
+      x-sdk-scope: server
+      summary: Create an app
+      description: >-
+        Enforces the org's `max_apps` plan limit and mints the app's first
+        API credential in the same call — the returned `secret` is shown
+        exactly once and cannot be retrieved again.
+      security: [{ orgBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  maxLength: 128
+      responses:
+        "201":
+          description: App created, with its first credential.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppWithCredential"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "500":
+          $ref: "#/components/responses/ServerError"
+    get:
+      operationId: listApps
+      tags: [apps]
+      x-sdk-scope: server
+      summary: List an org's apps
+      security: [{ orgBearer: [] }]
+      responses:
+        "200":
+          description: The org's apps.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/App"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /apps/{app_id}:
+    parameters:
+      - $ref: "#/components/parameters/AppId"
+    patch:
+      operationId: updateApp
+      tags: [apps]
+      x-sdk-scope: server
+      summary: Update an app's settings
+      description: >-
+        Partial update: send whichever of `max_thread_depth` /
+        `message_edit_enabled` (see `App`) you want to change, omit the
+        rest — at least one is required. Takes effect immediately: the very
+        next request that checks either setting sees the new value, nothing
+        is cached.
+      security: [{ orgBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: At least one property is required.
+              properties:
+                max_thread_depth: { type: integer, minimum: 0 }
+                message_edit_enabled: { type: boolean }
+      responses:
+        "200":
+          description: The app's updated settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/App"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /apps/{app_id}/credentials:
+    parameters:
+      - $ref: "#/components/parameters/AppId"
+    post:
+      operationId: createAppCredential
+      tags: [credentials]
+      x-sdk-scope: server
+      summary: Issue a new API credential for an app
+      description: An app can hold multiple live credentials — issue a new one before revoking an old one to rotate without downtime.
+      security: [{ orgBearer: [] }]
+      responses:
+        "201":
+          description: Credential created. `secret` is shown once.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Credential"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ServerError"
+    get:
+      operationId: listAppCredentials
+      tags: [credentials]
+      x-sdk-scope: server
+      summary: List an app's credentials
+      description: Never returns a secret — only what's needed to tell credentials apart.
+      security: [{ orgBearer: [] }]
+      responses:
+        "200":
+          description: The app's credentials.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Credential"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /apps/{app_id}/credentials/{credential_id}:
+    parameters:
+      - $ref: "#/components/parameters/AppId"
+      - name: credential_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      operationId: revokeAppCredential
+      tags: [credentials]
+      x-sdk-scope: server
+      summary: Revoke an API credential
+      description: Checked live on every request — takes effect immediately, not on token expiry.
+      security: [{ orgBearer: [] }]
+      responses:
+        "204":
+          description: Revoked.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /apps/{app_id}/credentials/{credential_id}/reveal:
+    parameters:
+      - $ref: "#/components/parameters/AppId"
+      - name: credential_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: revealAppCredential
+      tags: [credentials]
+      x-sdk-scope: server
+      summary: Reveal a credential's secret again
+      description: >-
+        The `secret` on `createAppCredential`'s response is shown once —
+        this is how you get it back afterward, whether that's because the
+        console modal got closed, the page was refreshed, or it's simply a
+        different day. Returns the same value every time (the secret is
+        stored encrypted, not just hashed, specifically so this call can
+        exist); revoking a credential does not stop it from being revealed,
+        only from being used.
+      security: [{ orgBearer: [] }]
+      responses:
+        "200":
+          description: The credential's secret.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevealedCredential"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /apps/token:
+    post:
+      operationId: createAppToken
+      tags: [credentials]
+      x-sdk-scope: server
+      summary: Exchange an app's key+secret for a short-lived Bearer token
+      description: >-
+        Authenticates with `appBasicAuth` (your app's key as username,
+        secret as password) and mints the `appBearer` token every other
+        server-scoped call — currently just `POST /users` — actually runs
+        on. Valid 1h; re-exchange whenever it expires rather than sending
+        the raw secret on every end-user you create. A revoked credential's
+        already-issued tokens stop working immediately, not just future
+        exchanges — this is checked live on every `POST /users` call, not
+        cached from the token alone.
+      security: [{ appBasicAuth: [] }]
+      responses:
+        "201":
+          description: Token issued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppToken"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /users:
+    post:
+      operationId: createEndUser
+      tags: [users]
+      x-sdk-scope: server
+      summary: Create an end-user, and mint their client token
+      description: >-
+        Called by your backend on behalf of one of your own end-users —
+        never something an end-user presents credentials to directly. The
+        response's `token` is what you hand to that end-user's client for
+        every subsequent **client**-scoped call; it expires after 24h, so
+        re-mint it (call this again is not idempotent — see your own
+        user-lookup logic) whenever your backend issues a fresh session.
+      security: [{ appBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [display_name, region]
+              properties:
+                display_name:
+                  type: string
+                  maxLength: 128
+                region:
+                  type: string
+                  enum: [eu, us, asia]
+      responses:
+        "201":
+          description: End-user created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndUserWithToken"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /users/me/channels:
+    get:
+      operationId: listMyChannels
+      tags: [channels]
+      x-sdk-scope: client
+      summary: List the calling end-user's channels
+      security: [{ userBearer: [] }]
+      responses:
+        "200":
+          description: Channels the caller belongs to, most-recently-active first is not guaranteed — sort client-side if needed.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/UserChannel"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /channels:
+    post:
+      operationId: createChannel
+      tags: [channels]
+      x-sdk-scope: client
+      summary: Create a channel
+      description: The channel's home region is wherever it's created — the caller becomes its first member.
+      security: [{ userBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  maxLength: 128
+      responses:
+        "201":
+          description: Channel created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Channel"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /channels/{id}/members:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+    post:
+      operationId: addChannelMember
+      tags: [channels]
+      x-sdk-scope: client
+      summary: Add a member to a channel
+      description: Only an existing member may add another.
+      security: [{ userBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: string, format: uuid }
+      responses:
+        "201":
+          description: Member added.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  channel_id: { type: string, format: uuid }
+                  user_id: { type: string, format: uuid }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/QuotaExceeded"
+        "500":
+          $ref: "#/components/responses/ServerError"
+    get:
+      operationId: listChannelMembers
+      tags: [channels]
+      x-sdk-scope: client
+      summary: List a channel's members
+      security: [{ userBearer: [] }]
+      responses:
+        "200":
+          description: Members of the channel.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ChannelMember"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /channels/{id}/messages:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+    post:
+      operationId: sendMessage
+      tags: [messages]
+      x-sdk-scope: client
+      summary: Send a message
+      description: >-
+        `client_message_id` is a client-generated UUID used for
+        idempotency — retrying the same send (e.g. after a timeout) with
+        the same `client_message_id` returns the original message rather
+        than creating a duplicate. Generate a fresh one per logical send.
+        Set `parent_id` to reply to another message in the same channel —
+        omit it for a top-level message. A reply is rejected with 400 if it
+        would nest deeper than the app's `max_thread_depth`, and with 404
+        if `parent_id` doesn't name a message in this channel. Set `poll_id`
+        to attach an already-created poll (`POST /channels/{id}/polls`) —
+        404 if it doesn't name a poll in this channel.
+      security: [{ userBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [client_message_id, body]
+              properties:
+                client_message_id: { type: string, format: uuid }
+                body:
+                  type: string
+                  maxLength: 4000
+                parent_id:
+                  type: string
+                  format: uuid
+                  description: Reply to this message instead of sending a top-level one. Must be in the same channel.
+                poll_id:
+                  type: string
+                  format: uuid
+                  description: Attach an already-created poll to this message. Must be in the same channel.
+      responses:
+        "201":
+          description: Message sent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerError"
+    get:
+      operationId: listMessages
+      tags: [messages]
+      x-sdk-scope: client
+      summary: List messages, newest-first, cursor-paginated
+      description: >-
+        Never offset-paginated. Pass the oldest `sequence` you've already
+        seen as `before` to page further back; omit it to get the most
+        recent page.
+      security: [{ userBearer: [] }]
+      parameters:
+        - name: before
+          in: query
+          description: Return messages with a sequence strictly less than this. Omit for the most recent page.
+          schema: { type: integer, format: int64 }
+        - name: limit
+          in: query
+          description: Defaults to 50, capped at 100.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: Messages, newest-first. Never includes a message from anyone the caller has any block relationship with.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Message"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /channels/{id}/messages/{message_id}:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+      - name: message_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      operationId: editMessage
+      tags: [messages]
+      x-sdk-scope: client
+      summary: Edit a message's body
+      description: >-
+        Only the message's own sender may edit it (403 otherwise). Rejected
+        with 403 if this app has `message_edit_enabled` turned off (see
+        `App`, settable via `updateApp`). Overwrites `body` and refreshes
+        `edited_at` — no edit history is kept, only the current text and
+        when it last changed.
+      security: [{ userBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body:
+                  type: string
+                  maxLength: 4000
+      responses:
+        "200":
+          description: The message with its updated body and edited_at.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /channels/{id}/messages/{message_id}/reactions:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+      - name: message_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: addReaction
+      tags: [reactions]
+      x-sdk-scope: client
+      summary: Add a reaction to a message
+      description: Idempotent — reacting again with the same key leaves state unchanged.
+      security: [{ userBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reaction]
+              properties:
+                reaction:
+                  $ref: "#/components/schemas/ReactionKey"
+      responses:
+        "200":
+          description: Updated reaction state for the message.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReactionState"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /channels/{id}/messages/{message_id}/reactions/{reaction}:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+      - name: message_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: reaction
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/ReactionKey"
+    delete:
+      operationId: removeReaction
+      tags: [reactions]
+      x-sdk-scope: client
+      summary: Remove the caller's own reaction from a message
+      security: [{ userBearer: [] }]
+      responses:
+        "200":
+          description: Updated reaction state for the message.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReactionState"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /channels/{id}/messages/{message_id}/pin:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+      - name: message_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: pinMessage
+      tags: [pins]
+      x-sdk-scope: client
+      summary: Pin a message
+      description: >-
+        Idempotent — pinning an already-pinned message leaves the existing
+        pinned_at/pinned_by unchanged. Any channel member may pin; there's
+        no separate channel-owner role in this API.
+      security: [{ userBearer: [] }]
+      responses:
+        "200":
+          description: The message with its updated pinned state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerError"
+    delete:
+      operationId: unpinMessage
+      tags: [pins]
+      x-sdk-scope: client
+      summary: Unpin a message
+      description: >-
+        Idempotent. Any channel member may unpin, regardless of who pinned
+        it — there's no "only the pinner can unpin" restriction.
+      security: [{ userBearer: [] }]
+      responses:
+        "200":
+          description: The message with its updated pinned state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /channels/{id}/pinned-messages:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+    get:
+      operationId: listPinnedMessages
+      tags: [pins]
+      x-sdk-scope: client
+      summary: List a channel's pinned messages
+      description: Most-recently-pinned first. No cursor pagination — a channel's pinned set is expected to stay small.
+      security: [{ userBearer: [] }]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 100 }
+      responses:
+        "200":
+          description: Pinned messages.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Message" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /channels/{id}/polls:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+    post:
+      operationId: createPoll
+      tags: [polls]
+      x-sdk-scope: client
+      summary: Create a poll
+      description: >-
+        Creates a poll as a standalone entity — it isn't visible to other
+        channel members until a message attaches it via `poll_id`
+        (`POST /channels/{id}/messages`). `options` must have between 2 and
+        10 entries, each unique (case-insensitive). Omit `closes_at` for a
+        poll that never closes on its own.
+      security: [{ userBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question, options]
+              properties:
+                question:
+                  type: string
+                  maxLength: 500
+                options:
+                  type: array
+                  minItems: 2
+                  maxItems: 10
+                  items: { type: string, maxLength: 200 }
+                multi_select:
+                  type: boolean
+                  default: false
+                  description: Whether a voter may select more than one option.
+                closes_at:
+                  type: string
+                  format: date-time
+                  description: Must be in the future. Omit for a poll that never closes.
+      responses:
+        "201":
+          description: Poll created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Poll"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /channels/{id}/polls/{poll_id}:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+      - name: poll_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: getPoll
+      tags: [polls]
+      x-sdk-scope: client
+      summary: Get a poll's current state
+      description: >-
+        Includes the caller's own current vote(s) as `voted_option_ids` —
+        never anyone else's.
+      security: [{ userBearer: [] }]
+      responses:
+        "200":
+          description: The poll.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Poll"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /channels/{id}/polls/{poll_id}/votes:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+      - name: poll_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: votePoll
+      tags: [polls]
+      x-sdk-scope: client
+      summary: Cast (or replace) the caller's vote
+      description: >-
+        Replaces the caller's ENTIRE vote for this poll with `option_ids` —
+        there's no separate per-option toggle. A single-select poll accepts
+        exactly one id (400 otherwise); a multi-select poll accepts more
+        than one. 400 if the poll has closed (`closes_at` in the past). To
+        retract a vote entirely, `DELETE` this same URL instead of posting
+        an empty list.
+      security: [{ userBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [option_ids]
+              properties:
+                option_ids:
+                  type: array
+                  minItems: 1
+                  items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Updated tallies for the poll.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PollVoteState"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerError"
+    delete:
+      operationId: clearPollVotes
+      tags: [polls]
+      x-sdk-scope: client
+      summary: Retract the caller's own vote(s)
+      description: Idempotent — retracting with no existing vote leaves state unchanged.
+      security: [{ userBearer: [] }]
+      responses:
+        "200":
+          description: Updated tallies for the poll.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PollVoteState"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /channels/{id}/read:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+    post:
+      operationId: markRead
+      tags: [read-state]
+      x-sdk-scope: client
+      summary: Mark a channel read
+      description: >-
+        Idempotent and monotonic — never lets the watermark regress, so
+        it's safe to call on every channel open without tracking whether
+        you already marked this sequence read. Omit `sequence` (or send an
+        empty body) to mark read up to whatever the latest message
+        currently is.
+      security: [{ userBearer: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sequence: { type: integer, format: int64 }
+      responses:
+        "200":
+          description: Updated read state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadState"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /channels/{id}/read-state:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+    get:
+      operationId: listReadState
+      tags: [read-state]
+      x-sdk-scope: client
+      summary: List every member's read watermark for a channel
+      description: The snapshot to load once on opening a channel; after that, keep it current from realtime `read.updated` events (see the SDK's realtime module).
+      security: [{ userBearer: [] }]
+      responses:
+        "200":
+          description: Read state for every member.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ReadState"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /blocks:
+    post:
+      operationId: blockUser
+      tags: [blocks]
+      x-sdk-scope: client
+      summary: Block another end-user in the same app
+      description: Idempotent. Blocking is bidirectional in effect (neither side sees the other's messages or realtime events), even though only the caller's own outbound block row is created.
+      security: [{ userBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: string, format: uuid }
+      responses:
+        "201":
+          description: Block created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  blocked_user_id: { type: string, format: uuid }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+    get:
+      operationId: listBlocks
+      tags: [blocks]
+      x-sdk-scope: client
+      summary: List end-users the caller has blocked
+      description: The caller's own outbound block list, not the bidirectional enforcement set.
+      security: [{ userBearer: [] }]
+      responses:
+        "200":
+          description: Blocked end-users.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    user_id: { type: string, format: uuid }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /blocks/{user_id}:
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      operationId: unblockUser
+      tags: [blocks]
+      x-sdk-scope: client
+      summary: Remove a block the caller created
+      description: Only the user who created the block may remove it.
+      security: [{ userBearer: [] }]
+      responses:
+        "204":
+          description: Unblocked.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /bookmarks/folders:
+    post:
+      operationId: createBookmarkFolder
+      tags: [bookmarks]
+      x-sdk-scope: client
+      summary: Create a bookmark folder
+      security: [{ userBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 200 }
+      responses:
+        "201":
+          description: Folder created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookmarkFolder"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: A folder with that name already exists for this user.
+        "500":
+          $ref: "#/components/responses/ServerError"
+    get:
+      operationId: listBookmarkFolders
+      tags: [bookmarks]
+      x-sdk-scope: client
+      summary: List the caller's own bookmark folders
+      security: [{ userBearer: [] }]
+      responses:
+        "200":
+          description: The caller's folders, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/BookmarkFolder" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /bookmarks/folders/{folder_id}:
+    parameters:
+      - name: folder_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      operationId: renameBookmarkFolder
+      tags: [bookmarks]
+      x-sdk-scope: client
+      summary: Rename one of the caller's own folders
+      security: [{ userBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 200 }
+      responses:
+        "200":
+          description: The renamed folder.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookmarkFolder"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: A folder with that name already exists for this user.
+        "500":
+          $ref: "#/components/responses/ServerError"
+    delete:
+      operationId: deleteBookmarkFolder
+      tags: [bookmarks]
+      x-sdk-scope: client
+      summary: Delete one of the caller's own folders
+      description: >-
+        Bookmarks filed in the folder are not deleted — they're un-filed
+        back to "unfiled" instead.
+      security: [{ userBearer: [] }]
+      responses:
+        "204":
+          description: Folder deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /bookmarks:
+    post:
+      operationId: createBookmark
+      tags: [bookmarks]
+      x-sdk-scope: client
+      summary: Bookmark a message
+      description: >-
+        Idempotent — bookmarking an already-bookmarked message returns the
+        existing bookmark unchanged rather than moving it into a
+        newly-requested folder_id (use `moveBookmark` to reorganize it).
+        The caller must be a member of the channel, and the message must
+        actually exist in it.
+      security: [{ userBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel_id, message_id]
+              properties:
+                channel_id: { type: string, format: uuid }
+                message_id: { type: string, format: uuid }
+                folder_id:
+                  type: string
+                  format: uuid
+                  description: Files the bookmark directly into this folder. Omit to leave it unfiled.
+      responses:
+        "201":
+          description: Bookmark created (or the existing one, if already bookmarked).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bookmark"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The channel isn't one the caller is a member of, or the message doesn't exist in it.
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerError"
+    get:
+      operationId: listBookmarks
+      tags: [bookmarks]
+      x-sdk-scope: client
+      summary: List the caller's own bookmarks
+      security: [{ userBearer: [] }]
+      parameters:
+        - name: folder_id
+          in: query
+          description: >-
+            Omit to list every bookmark regardless of folder. Pass "none"
+            to list only unfiled bookmarks, or a folder's id to scope to
+            that folder specifically.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The caller's bookmarks, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Bookmark" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /bookmarks/{bookmark_id}:
+    parameters:
+      - name: bookmark_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      operationId: moveBookmark
+      tags: [bookmarks]
+      x-sdk-scope: client
+      summary: Move a bookmark into a different folder, or unfile it
+      description: Omit folder_id (or pass it as null) to unfile the bookmark back to "unfiled."
+      security: [{ userBearer: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                folder_id:
+                  type: string
+                  format: uuid
+                  nullable: true
+      responses:
+        "200":
+          description: The bookmark with its updated folder_id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bookmark"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerError"
+    delete:
+      operationId: deleteBookmark
+      tags: [bookmarks]
+      x-sdk-scope: client
+      summary: Remove a bookmark
+      security: [{ userBearer: [] }]
+      responses:
+        "204":
+          description: Bookmark deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+components:
+  securitySchemes:
+    orgBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        The org-admin token from `POST /organizations`, or a dashboard
+        session token — both resolve to the same org identity server-side.
+        Server-side use only.
+    userBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        The end-user token from `POST /users`' response. Safe to hand to
+        an end-user's own client — it can only act as that one end-user.
+    appBasicAuth:
+      type: http
+      scheme: basic
+      description: >-
+        An app's API key as the username, its secret as the password (see
+        `POST /apps/{app_id}/credentials`). Server-side use only — never
+        ship these to a browser or mobile client. The one place this is
+        still sent directly is `POST /apps/token`; every other server-scoped
+        call uses the short-lived Bearer token that endpoint mints instead
+        — see `appBearer`.
+    appBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        The token from `POST /apps/token` (itself authenticated with
+        `appBasicAuth`). Carries this App's identity for `POST /users` so
+        your backend sends its raw secret once per token lifetime (1h)
+        instead of on every end-user it creates. Re-exchange whenever it
+        expires — server-side use only, same as `appBasicAuth`.
+
+  parameters:
+    OrgId:
+      name: org_id
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    AppId:
+      name: app_id
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    ChannelId:
+      name: id
+      in: path
+      required: true
+      description: Channel ID.
+      schema: { type: string, format: uuid }
+
+  responses:
+    BadRequest:
+      description: The request body or a parameter failed validation.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing, invalid, expired, or revoked credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: Authenticated, but not authorized for this resource.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: The resource doesn't exist (or isn't visible to the caller).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    QuotaExceeded:
+      description: A plan limit (not a rate limit) was reached — e.g. max apps, max channels, max channel members.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: Per-minute rate limit exceeded for this operation. Back off and retry.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ServerError:
+      description: Unexpected server-side failure.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+
+    OrganizationWithToken:
+      type: object
+      properties:
+        org_id: { type: integer, format: int64 }
+        name: { type: string }
+        tier: { type: string, enum: [FREE, PRO, BUSINESS, ENTERPRISE] }
+        token:
+          type: string
+          description: Org-admin bearer token. Store it like any other secret.
+      required: [org_id, name, tier, token]
+
+    App:
+      type: object
+      properties:
+        app_id: { type: integer, format: int64 }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+        max_thread_depth:
+          type: integer
+          minimum: 0
+          description: >-
+            How many levels deep a reply chain (Message.parent_id) may nest
+            for this app. 0 means unlimited. Defaults to 3 at app creation;
+            change it any time with `updateApp`.
+        message_edit_enabled:
+          type: boolean
+          description: >-
+            Whether this app's end-users may edit their own messages
+            (`editMessage`). Defaults to true at app creation; change it any
+            time with `updateApp` — takes effect on the very next edit
+            attempt, nothing is cached.
+      required: [app_id, name, created_at, max_thread_depth, message_edit_enabled]
+
+    Credential:
+      type: object
+      properties:
+        credential_id: { type: string, format: uuid }
+        key: { type: string }
+        secret:
+          type: string
+          description: Only present on the response to the call that created this credential — never retrievable again afterward.
+        created_at: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time, nullable: true }
+      required: [credential_id, key, created_at]
+
+    RevealedCredential:
+      type: object
+      properties:
+        secret:
+          type: string
+          description: The same secret value shown once at creation — decrypted from at-rest storage on demand.
+      required: [secret]
+
+    AppToken:
+      type: object
+      properties:
+        token:
+          type: string
+          description: Bearer token for `POST /users` (see `appBearer`). Valid 1h.
+        app_id: { type: integer, format: int64 }
+        expires_at: { type: string, format: date-time }
+      required: [token, app_id, expires_at]
+
+    AppWithCredential:
+      allOf:
+        - $ref: "#/components/schemas/App"
+        - type: object
+          properties:
+            credential: { $ref: "#/components/schemas/Credential" }
+          required: [credential]
+
+    EndUserWithToken:
+      type: object
+      properties:
+        user_id: { type: string, format: uuid }
+        display_name: { type: string }
+        region: { type: string, enum: [eu, us, asia] }
+        tier: { type: string, enum: [FREE, PRO, BUSINESS, ENTERPRISE] }
+        token:
+          type: string
+          description: Bearer token for this end-user. Valid 24h. Hand this to the end-user's own client for client-scoped calls.
+      required: [user_id, display_name, region, tier, token]
+
+    Channel:
+      type: object
+      properties:
+        channel_id: { type: string, format: uuid }
+        name: { type: string }
+        home_region: { type: string, enum: [eu, us, asia] }
+        virtual_shard: { type: integer }
+      required: [channel_id, name, home_region, virtual_shard]
+
+    Status:
+      type: object
+      description: >-
+        Online status, derived server-side from recency of last activity
+        (connecting, sending a message, reacting, marking read) rather than
+        a separately tracked "connected" flag — see the platform's
+        internal/users.OnlineWindow for the exact threshold. `last_active_at`
+        is omitted for a user with no tracked activity yet.
+      properties:
+        last_active_at: { type: string, format: date-time }
+        is_online: { type: boolean }
+      required: [is_online]
+
+    ChannelMember:
+      type: object
+      properties:
+        user_id: { type: string, format: uuid }
+        display_name: { type: string }
+        status:
+          $ref: "#/components/schemas/Status"
+      required: [user_id, display_name, status]
+
+    UserChannel:
+      type: object
+      properties:
+        channel_id: { type: string, format: uuid }
+        name: { type: string }
+        home_region: { type: string, enum: [eu, us, asia] }
+        last_message_sequence: { type: integer, format: int64 }
+        last_message_at: { type: string, format: date-time }
+      required: [channel_id, name, home_region, last_message_sequence]
+
+    ReactionKey:
+      type: string
+      description: Canonical reaction key — not a raw emoji glyph. Map to a display glyph client-side.
+      enum: [like, dislike, love, laugh, celebrate, eyes, rocket, fire]
+
+    ReactionSummary:
+      type: object
+      properties:
+        reaction: { $ref: "#/components/schemas/ReactionKey" }
+        user_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+      required: [reaction, user_id, created_at]
+
+    ReactionState:
+      type: object
+      properties:
+        reaction_counts:
+          type: object
+          additionalProperties: { type: integer }
+          description: 'Reaction key to count, e.g. `{"like": 3, "fire": 1}`.'
+        latest_reactions:
+          type: array
+          items: { $ref: "#/components/schemas/ReactionSummary" }
+      required: [reaction_counts, latest_reactions]
+
+    Message:
+      type: object
+      properties:
+        message_id: { type: string, format: uuid }
+        channel_id: { type: string, format: uuid }
+        sequence:
+          type: integer
+          format: int64
+          description: Monotonically increasing per channel — use as the `before` cursor for pagination.
+        sender_id: { type: string, format: uuid }
+        client_message_id: { type: string, format: uuid }
+        body: { type: string }
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            Absent/null for a top-level message. Set to another message_id
+            in the same channel when this is a reply — reconstruct a thread
+            client-side by grouping messages on this field, there's no
+            separate "thread" resource to fetch. Nesting is unbounded at
+            the API level; each app's own max_thread_depth setting (see
+            `App`) is enforced on send.
+        poll_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            Absent/null for a message with no poll attached. Unlike
+            parent_id, a poll IS a separate resource — fetch its current
+            state (options, tallies) with `GET /channels/{id}/polls/{poll_id}`
+            rather than expecting it inline here.
+        reply_count:
+          type: integer
+          format: int64
+          description: >-
+            How many messages have parent_id set to this message's
+            message_id — denormalized on the row, always present (0 when
+            there are no replies yet, including on a reply itself).
+        created_at: { type: string, format: date-time }
+        edited_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            Absent/null for a message that's never been edited. Set (and
+            refreshed) by `editMessage`; no edit history is kept, only the
+            current body and when it last changed.
+        reaction_counts:
+          type: object
+          additionalProperties: { type: integer }
+        latest_reactions:
+          type: array
+          items: { $ref: "#/components/schemas/ReactionSummary" }
+        pinned_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            Absent/null for a message that isn't currently pinned. Set (along
+            with pinned_by) by `pinMessage`, cleared by `unpinMessage`. Any
+            channel member may pin or unpin — this is channel-shared state,
+            not per-user, unlike a bookmark.
+        pinned_by:
+          type: string
+          format: uuid
+          nullable: true
+          description: Who pinned the message — meaningful only alongside a non-null pinned_at.
+      required: [message_id, channel_id, sequence, sender_id, client_message_id, body, created_at, reply_count, reaction_counts, latest_reactions]
+
+    BookmarkFolder:
+      type: object
+      description: One of a user's own private folders for organizing bookmarks.
+      properties:
+        folder_id: { type: string, format: uuid }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [folder_id, name, created_at]
+
+    Bookmark:
+      type: object
+      description: >-
+        A user's own private saved message. Never visible to anyone else —
+        the opposite of a pinned message, which is channel-shared. See
+        `Message.pinned_at` for pins.
+      properties:
+        bookmark_id: { type: string, format: uuid }
+        channel_id: { type: string, format: uuid }
+        message_id: { type: string, format: uuid }
+        folder_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Absent/null when the bookmark hasn't been filed into a folder.
+        created_at: { type: string, format: date-time }
+      required: [bookmark_id, channel_id, message_id, created_at]
+
+    PollOption:
+      type: object
+      properties:
+        option_id: { type: string, format: uuid }
+        label: { type: string }
+        vote_count: { type: integer }
+      required: [option_id, label, vote_count]
+
+    Poll:
+      type: object
+      description: >-
+        A standalone entity, not a property of the message that references
+        it — fetch this directly rather than expecting it inline on a
+        Message. See `Message.poll_id`.
+      properties:
+        poll_id: { type: string, format: uuid }
+        channel_id: { type: string, format: uuid }
+        creator_id: { type: string, format: uuid }
+        question: { type: string }
+        multi_select: { type: boolean }
+        closes_at:
+          type: string
+          format: date-time
+          description: Absent for a poll that never closes on its own.
+        created_at: { type: string, format: date-time }
+        options:
+          type: array
+          items: { $ref: "#/components/schemas/PollOption" }
+        total_voters:
+          type: integer
+          description: Distinct voters — not the sum of each option's vote_count, which double-counts a multi_select voter who picked more than one option.
+        voted_option_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: The calling user's own current vote(s). Never anyone else's.
+      required: [poll_id, channel_id, creator_id, question, multi_select, created_at, options, total_voters]
+
+    PollVoteState:
+      type: object
+      description: What POST/DELETE .../votes returns — just the tallies that changed, same shape as ReactionState for a reaction add/remove.
+      properties:
+        options:
+          type: array
+          items: { $ref: "#/components/schemas/PollOption" }
+        total_voters: { type: integer }
+        voted_option_ids:
+          type: array
+          items: { type: string, format: uuid }
+      required: [options, total_voters, voted_option_ids]
+
+    ReadState:
+      type: object
+      properties:
+        user_id: { type: string, format: uuid }
+        last_read_sequence: { type: integer, format: int64 }
+      required: [user_id, last_read_sequence]

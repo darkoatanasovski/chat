@@ -64,8 +64,9 @@ architecture decision records — is indexed at
 
 ## Status
 
-V1 feature set only, by design (INSTRUCTIONS.md §1): no reactions, threads,
-edit/delete, search, presence, attachments, or E2EE yet. The architecture is
-built so each of those is an additive Kafka event + package, not a redesign
-— see [`docs/platform/kafka-and-events.md`](docs/platform/kafka-and-events.md)
-and the `new-event` skill.
+V1 feature set plus a few additive extras built since (reactions, presence,
+threaded replies): still no edit/delete, search, attachments, or E2EE. The
+architecture is built so each addition is an additive Kafka event + package,
+not a redesign — see
+[`docs/platform/kafka-and-events.md`](docs/platform/kafka-and-events.md) and
+the `new-event` skill.

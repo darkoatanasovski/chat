@@ -8,12 +8,20 @@
 //
 // Token shape: base64url(json claims) + "." + base64url(HMAC-SHA256 signature).
 //
-// Two claim shapes share this one signer, distinguished by Type: an
-// end-user token (sub=user_id, region, app_id) and an org-admin token
-// (sub=org_id) used only to manage that org's Apps and their API
-// credentials. Neither carries a tier — tier is resolved live from
-// app_id -> organizations.tier (internal/apps.TierResolver) so a plan
-// change takes effect immediately, not after a token's next reissue.
+// Claim shapes share this one signer, distinguished by Type: an end-user
+// token (sub=user_id, region, app_id), an org-admin token (sub=org_id) used
+// only to manage that org's Apps and their API credentials, and an app
+// token (sub=app_id, app_id, api_key) that a business's backend exchanges
+// its App's key+secret for (POST /apps/token) so it can authenticate
+// POST /users with a short-lived Bearer token instead of sending the raw
+// secret on every call — see cmd/api's requireAppJWT. Revocation still
+// takes effect immediately despite being a signed token: api_key is
+// re-checked live against Postgres on every requireAppJWT call
+// (apps.CredentialRepo.IsActive), the same guarantee Basic auth's live
+// Verify already gave. Neither user nor app tokens carry a tier — tier is
+// resolved live from app_id -> organizations.tier (internal/apps.TierResolver)
+// so a plan change takes effect immediately, not after a token's next
+// reissue.
 package auth
 
 import (
@@ -38,14 +46,24 @@ const (
 	// carried here — both are resolved live from user_id on every request
 	// (orgusers.Repo.GetByID), same reasoning as AppID never carrying tier.
 	ClaimsTypeOrgUser ClaimsType = "org_user"
+	// ClaimsTypeApp is minted by POST /apps/token (requireAppCredentials,
+	// HTTP Basic) and verified by requireAppJWT. See the package doc above
+	// for why api_key still gets a live Postgres check on every use.
+	ClaimsTypeApp ClaimsType = "app"
 )
 
 type Claims struct {
-	Subject string     `json:"sub"` // user_id (Type=user) or org_id (Type=org_admin)
+	Subject string     `json:"sub"` // user_id (Type=user), org_id (Type=org_admin), or app_id (Type=app)
 	Type    ClaimsType `json:"typ"`
 	Region  string     `json:"region,omitempty"` // user tokens only
-	AppID   int64      `json:"app_id,omitempty"` // user tokens only
-	Exp     int64      `json:"exp"`
+	AppID   int64      `json:"app_id,omitempty"` // user and app tokens only
+	// APIKey identifies which app_credentials row this app token was
+	// exchanged from — app tokens only. Never the secret itself, and not
+	// sufficient on its own to authenticate anything: requireAppJWT still
+	// re-checks this key isn't revoked on every request (see the package
+	// doc comment above).
+	APIKey string `json:"api_key,omitempty"`
+	Exp    int64  `json:"exp"`
 }
 
 type Signer struct {
@@ -78,6 +96,20 @@ func (s *Signer) IssueOrgUserToken(userID string, ttl time.Duration) (string, er
 	return s.issue(Claims{
 		Subject: userID,
 		Type:    ClaimsTypeOrgUser,
+		Exp:     time.Now().Add(ttl).Unix(),
+	})
+}
+
+// IssueAppToken mints the Bearer token POST /apps/token hands back after
+// verifying an App's key+secret — apiKey is the credential's key (its
+// public half), carried so requireAppJWT can re-check live that this
+// specific credential is still active without needing the secret again.
+func (s *Signer) IssueAppToken(appID int64, apiKey string, ttl time.Duration) (string, error) {
+	return s.issue(Claims{
+		Subject: strconv.FormatInt(appID, 10),
+		Type:    ClaimsTypeApp,
+		AppID:   appID,
+		APIKey:  apiKey,
 		Exp:     time.Now().Add(ttl).Unix(),
 	})
 }

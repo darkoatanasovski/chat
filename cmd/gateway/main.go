@@ -30,6 +30,7 @@ import (
 	kafkastorage "github.com/darkoatanasovski/chat/internal/storage/kafka"
 	pgstorage "github.com/darkoatanasovski/chat/internal/storage/postgres"
 	redisstorage "github.com/darkoatanasovski/chat/internal/storage/redis"
+	"github.com/darkoatanasovski/chat/internal/users"
 )
 
 func main() {
@@ -80,6 +81,10 @@ func main() {
 	dedup := realtime.NewDedup(redisClient, cfg.KafkaConsumerGroup, m)
 	membershipRepo := membership.NewRepo(controlPool)
 	blocksRepo := blocks.NewRepo(controlPool)
+	// Presence: same Service cmd/api uses (internal/users), just wired up
+	// here too so a live WebSocket connection is itself a first-class
+	// activity signal, not only the REST mutation handlers.
+	presenceSvc := users.NewService(users.NewRepo(controlPool))
 	blocksCache := realtime.NewBlocksCache(redisClient, m)
 	publisher := realtime.NewPublisher(redisClient, m)
 
@@ -109,7 +114,7 @@ func main() {
 		}
 	}()
 
-	connectHandler := realtime.NewConnectHandler(signer, hub, registry, delivery, gatewayID, m, log)
+	connectHandler := realtime.NewConnectHandler(signer, hub, registry, delivery, gatewayID, m, log, presenceSvc)
 
 	mux := http.NewServeMux()
 	mux.Handle("/connect", connectHandler)

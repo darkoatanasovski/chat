@@ -1,0 +1,13 @@
+-- Denormalized reply count: how many messages have parent_id = this
+-- message's message_id, kept in sync on the message row itself the same
+-- way reaction_counts/latest_reactions are (migrations/shard/0002_reactions.sql)
+-- — the UI never joins/counts messages by parent_id to render it, only
+-- reads what's already on the row.
+--
+-- Unlike reaction_counts (which internal/reactions fully recomputes from
+-- message_reactions on every add AND remove, since a reaction can go either
+-- direction), reply_count only ever moves one way: there is no "un-reply"
+-- endpoint today, so internal/messages.Repo.Send keeps it in sync with a
+-- single atomic increment in the same transaction as the new reply's
+-- insert, rather than a COUNT(*) recompute.
+ALTER TABLE messages ADD COLUMN reply_count BIGINT NOT NULL DEFAULT 0;

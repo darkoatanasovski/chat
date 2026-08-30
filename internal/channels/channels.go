@@ -159,19 +159,24 @@ func (r *Repo) CountByApp(ctx context.Context, appID int64) (int, error) {
 type ChannelRouteInfo struct {
 	ChannelID    uuid.UUID
 	AppID        int64
+	Name         string
 	HomeRegion   string
 	VirtualShard int
 }
 
-// ListRouteInfoByApps backs the dashboard's messages-sent view — every
-// channel across a set of an org's apps, grouped in one query rather than
-// one round trip per app (same convention as users.Repo.CountByRegion).
+// ListRouteInfoByApps backs the dashboard's messages-sent view and the
+// dashboard's polls view — every channel across a set of an org's apps,
+// grouped in one query rather than one round trip per app (same convention
+// as users.Repo.CountByRegion). Name is included (unlike the original
+// messages-sent view, which never needed to display which channel a count
+// belonged to) so the polls view can show "which channel" without a
+// separate per-poll lookup.
 func (r *Repo) ListRouteInfoByApps(ctx context.Context, appIDs []int64) ([]ChannelRouteInfo, error) {
 	if len(appIDs) == 0 {
 		return nil, nil
 	}
 	rows, err := r.pool.Query(ctx, `
-		SELECT channel_id, app_id, home_region, virtual_shard FROM channels WHERE app_id = ANY($1)
+		SELECT channel_id, app_id, name, home_region, virtual_shard FROM channels WHERE app_id = ANY($1)
 	`, appIDs)
 	if err != nil {
 		return nil, fmt.Errorf("channels: list route info by apps: %w", err)
@@ -181,8 +186,43 @@ func (r *Repo) ListRouteInfoByApps(ctx context.Context, appIDs []int64) ([]Chann
 	var out []ChannelRouteInfo
 	for rows.Next() {
 		var c ChannelRouteInfo
-		if err := rows.Scan(&c.ChannelID, &c.AppID, &c.HomeRegion, &c.VirtualShard); err != nil {
+		if err := rows.Scan(&c.ChannelID, &c.AppID, &c.Name, &c.HomeRegion, &c.VirtualShard); err != nil {
 			return nil, fmt.Errorf("channels: list route info by apps: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ListByVirtualShardRange backs the per-shard message-retention sweep
+// (cmd/worker): every channel whose virtual_shard falls in [minVS, maxVS] —
+// the range cmd/worker's own physical shard owns per shards.yaml — so the
+// sweep only ever touches channels whose messages actually live on its own
+// shard pool, with no per-channel hashing needed (virtual_shard is already
+// stored at creation time, see the package doc above).
+//
+// Keyset-paginated on channel_id (INSTRUCTIONS.md §11: never OFFSET) since a
+// large deployment's channels table won't fit one query's result set;
+// afterChannelID is the last channel_id from the previous page (uuid.Nil
+// for the first page).
+func (r *Repo) ListByVirtualShardRange(ctx context.Context, minVS, maxVS int, afterChannelID uuid.UUID, limit int) ([]Channel, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT channel_id, name, home_region, virtual_shard, app_id, created_by, created_at
+		FROM channels
+		WHERE virtual_shard BETWEEN $1 AND $2 AND channel_id > $3
+		ORDER BY channel_id
+		LIMIT $4
+	`, minVS, maxVS, afterChannelID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("channels: list by virtual shard range: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Channel
+	for rows.Next() {
+		var c Channel
+		if err := rows.Scan(&c.ChannelID, &c.Name, &c.HomeRegion, &c.VirtualShard, &c.AppID, &c.CreatedBy, &c.CreatedAt); err != nil {
+			return nil, fmt.Errorf("channels: list by virtual shard range: %w", err)
 		}
 		out = append(out, c)
 	}

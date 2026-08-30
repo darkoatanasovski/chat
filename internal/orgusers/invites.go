@@ -42,11 +42,14 @@ func NewInviteRepo(pool *pgxpool.Pool) *InviteRepo {
 }
 
 // Create mints a new invite and returns its one-time raw token alongside
-// the row — only the token's hash is ever stored, the same "shown once,
-// never retrievable again" guarantee apps.CredentialRepo.Create makes for
-// app credentials. There's no email infrastructure in this platform, so the
-// caller (cmd/api) hands the token back to the inviting owner directly to
-// share manually rather than this sending mail.
+// the row — only the token's hash is ever stored, genuinely never
+// retrievable again afterward (unlike apps.CredentialRepo.Create, which
+// now also keeps an encrypted copy so its secret CAN be revealed again —
+// see CredentialRepo.Reveal). An invite token doesn't need that: it's
+// consumed once to accept and then irrelevant, not a long-lived credential
+// someone might need to see again. There's no email infrastructure in this
+// platform, so the caller (cmd/api) hands the token back to the inviting
+// owner directly to share manually rather than this sending mail.
 func (r *InviteRepo) Create(ctx context.Context, orgID int64, email, role string, invitedBy uuid.UUID) (Invite, string, error) {
 	inviteID, err := uuid.NewV7()
 	if err != nil {

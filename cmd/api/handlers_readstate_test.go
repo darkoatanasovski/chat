@@ -129,7 +129,7 @@ func TestReadState_CrossAppIsolation(t *testing.T) {
 
 	_, keyA, secretA := createOrgAndApp(t, app, "FREE")
 	var ownerResp createUserResponse
-	rec := do(t, app, basicAuthed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "read-state-app-a-owner", Region: "eu"}), keyA, secretA), &ownerResp)
+	rec := do(t, app, authed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "read-state-app-a-owner", Region: "eu"}), appAccessToken(t, app, keyA, secretA)), &ownerResp)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create app-a owner: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -138,7 +138,7 @@ func TestReadState_CrossAppIsolation(t *testing.T) {
 
 	_, keyB, secretB := createOrgAndApp(t, app, "FREE")
 	var outsiderResp createUserResponse
-	rec = do(t, app, basicAuthed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "read-state-app-b-outsider", Region: "eu"}), keyB, secretB), &outsiderResp)
+	rec = do(t, app, authed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "read-state-app-b-outsider", Region: "eu"}), appAccessToken(t, app, keyB, secretB)), &outsiderResp)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create app-b outsider: status = %d, body = %s", rec.Code, rec.Body.String())
 	}

@@ -8,7 +8,7 @@ import (
 
 func TestDashboardBlocks_CreateListAndUnblock(t *testing.T) {
 	app := testApp(t)
-	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Blocks Org", "PRO")
+	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Blocks Org")
 	appID, _, _ := createTestApp(t, app, orgID, ownerToken)
 
 	userA := createDashboardEndUser(t, app, ownerToken, appID, "Dash Block A")
@@ -46,7 +46,7 @@ func TestDashboardBlocks_CreateListAndUnblock(t *testing.T) {
 
 func TestDashboardBlocks_UnblockNotFound(t *testing.T) {
 	app := testApp(t)
-	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Blocks Org 404", "PRO")
+	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Blocks Org 404")
 	appID, _, _ := createTestApp(t, app, orgID, ownerToken)
 
 	userA := createDashboardEndUser(t, app, ownerToken, appID, "No Block A")
@@ -60,11 +60,11 @@ func TestDashboardBlocks_UnblockNotFound(t *testing.T) {
 
 func TestDashboardBlocks_BothUsersMustBelongToApp(t *testing.T) {
 	app := testApp(t)
-	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Blocks Org Mismatch", "PRO")
+	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Blocks Org Mismatch")
 	appID, _, _ := createTestApp(t, app, orgID, ownerToken)
 	userA := createDashboardEndUser(t, app, ownerToken, appID, "Mismatch A")
 
-	otherOwnerToken, otherOrgID, _ := signUpDashboardOrg(t, app, "Other Org", "FREE")
+	otherOwnerToken, otherOrgID, _ := signUpDashboardOrg(t, app, "Other Org")
 	otherAppID, _, _ := createTestApp(t, app, otherOrgID, otherOwnerToken)
 	userFromOtherApp := createDashboardEndUser(t, app, otherOwnerToken, otherAppID, "Other App User")
 
@@ -78,10 +78,10 @@ func TestDashboardBlocks_BothUsersMustBelongToApp(t *testing.T) {
 
 func TestDashboardBlocks_CrossOrgIsolation(t *testing.T) {
 	app := testApp(t)
-	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Blocks Owner Org", "FREE")
+	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Blocks Owner Org")
 	appID, _, _ := createTestApp(t, app, orgID, ownerToken)
 
-	otherToken, _, _ := signUpDashboardOrg(t, app, "Blocks Intruder Org", "FREE")
+	otherToken, _, _ := signUpDashboardOrg(t, app, "Blocks Intruder Org")
 	rec := do(t, app, authed(jsonRequest("GET", fmt.Sprintf("/dashboard/apps/%d/blocks", appID), nil), otherToken), nil)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-org list blocks: status = %d, want 403", rec.Code)

@@ -13,6 +13,7 @@ x-common-env: &common-env
   VALKEY_MASTER_NAME: ${VALKEY_MASTER_NAME}
   KAFKA_BROKERS: ${KAFKA_BROKERS}
   AUTH_SECRET: ${AUTH_SECRET}
+  APP_SECRET_ENCRYPTION_KEY: ${APP_SECRET_ENCRYPTION_KEY}
   SHARDS_CONFIG: /etc/chat/shards.yaml
   TIERS_CONFIG: /etc/chat/tiers.yaml
   PEER_API_EU_URL: http://api-eu:8080
@@ -270,7 +271,10 @@ services:
       <<: *app-build
       args:
         SERVICE: worker
-    depends_on: [postgres-shard-a, kafka]
+    # postgres-control: the retention sweep (cmd/worker/retention.go) reads
+    # organizations/apps/channels to resolve each channel's tier — the one
+    # thing this worker touches outside its own shard.
+    depends_on: [postgres-control, postgres-shard-a, kafka]
     restart: unless-stopped
     environment:
       <<: *common-env
@@ -278,13 +282,16 @@ services:
       SHARD_DSN: ${SHARD_A_DSN}
       METRICS_ADDR: ":9100"
     ports: ["9101:9100"]
+    volumes:
+      - "../deploy/shards.yaml:/etc/chat/shards.yaml:ro"
+      - "../deploy/tiers.yaml:/etc/chat/tiers.yaml:ro"
 
   worker-outbox-b:
     build:
       <<: *app-build
       args:
         SERVICE: worker
-    depends_on: [postgres-shard-b, kafka]
+    depends_on: [postgres-control, postgres-shard-b, kafka]
     restart: unless-stopped
     environment:
       <<: *common-env
@@ -292,6 +299,9 @@ services:
       SHARD_DSN: ${SHARD_B_DSN}
       METRICS_ADDR: ":9100"
     ports: ["9102:9100"]
+    volumes:
+      - "../deploy/shards.yaml:/etc/chat/shards.yaml:ro"
+      - "../deploy/tiers.yaml:/etc/chat/tiers.yaml:ro"
 
   prometheus:
     image: prom/prometheus:v2.55.1

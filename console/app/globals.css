@@ -34,6 +34,39 @@ body {
   font-size: 15px;
 }
 
+/* Console theme — flat, pastel DARK palette for the authenticated
+ * dashboard (app/console/**, wrapped by app/console/layout.tsx) plus
+ * login/signup, scoped to this class so the marketing site at app/page.tsx
+ * keeps its own separate hero unchanged. Same token names as the @theme
+ * block above, just redefined: every `bg-*`/`text-*`/`border-*` utility
+ * already resolves through these custom properties, so nothing else has
+ * to change for the cascade to repaint. Soft/muted (not neon) hues keep
+ * the "pastel" character on a dark ground — a deliberately different mood
+ * from the @theme block's brighter accent green. */
+.console-theme {
+  --color-bg: #14131c;
+  --color-surface: #1c1b28;
+  --color-surface-2: #242332;
+  --color-border: #322f45;
+  --color-border-soft: #2a2838;
+  --color-text: #eeecf6;
+  --color-text-muted: #a29cc0;
+  --color-text-faint: #6f6a8a;
+
+  --color-accent: #9c8cf0;
+  --color-accent-strong: #b3a5f5;
+  --color-accent-soft: rgb(156 140 240 / 0.16);
+
+  --color-success: #6fd9b0;
+  --color-success-soft: rgb(111 217 176 / 0.14);
+  --color-danger: #f0897f;
+  --color-danger-soft: rgb(240 137 127 / 0.14);
+  --color-warning: #f0c178;
+  --color-warning-soft: rgb(240 193 120 / 0.14);
+  --color-info: #7ec8f0;
+  --color-info-soft: rgb(126 200 240 / 0.14);
+}
+
 * {
   scrollbar-color: var(--color-border) transparent;
   scrollbar-width: thin;
@@ -65,6 +98,95 @@ select {
   background: linear-gradient(90deg, var(--color-surface-2) 0%, var(--color-border) 50%, var(--color-surface-2) 100%);
   background-size: 800px 100%;
   animation: shimmer 1.6s linear infinite;
+}
+
+/* Hero illustration (components/landing/hero-illustration.tsx): a message
+   thread that scrolls the way a real chat does — each new bubble arrives
+   at the bottom and the whole log slides up, oldest messages scrolling
+   out past the header (clipped by #heroChatClip). One 9s keyframe drives
+   the log's position; each bubble's own arrival is a quick fade+pop
+   staggered with animation-delay, so the whole scene resets in sync
+   without any JS. */
+@keyframes chat-scroll {
+  0%   { transform: translateY(298px); opacity: 0; }
+  4%   { transform: translateY(298px); opacity: 1; }
+  18%  { transform: translateY(298px); opacity: 1; }
+  22%  { transform: translateY(234px); opacity: 1; }
+  38%  { transform: translateY(234px); opacity: 1; }
+  42%  { transform: translateY(170px); opacity: 1; }
+  58%  { transform: translateY(170px); opacity: 1; }
+  62%  { transform: translateY(106px); opacity: 1; }
+  78%  { transform: translateY(106px); opacity: 1; }
+  82%  { transform: translateY(42px);  opacity: 1; }
+  95%  { transform: translateY(42px);  opacity: 1; }
+  99%  { transform: translateY(42px);  opacity: 0; }
+  100% { transform: translateY(298px); opacity: 0; }
+}
+.chat-scroll {
+  animation: chat-scroll 9s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+
+@keyframes chat-bubble-arrive {
+  0% { opacity: 0; transform: translateY(6px) scale(0.94); }
+  6%, 100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.chat-bubble {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: chat-bubble-arrive 9s ease-out infinite both;
+}
+
+@keyframes chat-typing-wrap {
+  0%, 78% { opacity: 0; }
+  82%, 94% { opacity: 1; }
+  98%, 100% { opacity: 0; }
+}
+.chat-typing-wrap {
+  animation: chat-typing-wrap 9s ease-in-out infinite;
+}
+
+@keyframes chat-typing-dot {
+  0%, 100% { opacity: 0.35; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-3px); }
+}
+.chat-typing-dot {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: chat-typing-dot 1s ease-in-out infinite;
+}
+
+@keyframes chat-ping-ring {
+  0% { opacity: 0; transform: scale(0.6); }
+  6% { opacity: 0.6; transform: scale(0.9); }
+  20%, 100% { opacity: 0; transform: scale(2.2); }
+}
+.chat-ping-ring {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: chat-ping-ring 9s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-scroll {
+    animation: none !important;
+    transform: translateY(42px) !important;
+    opacity: 1 !important;
+  }
+  .chat-bubble,
+  .chat-typing-dot {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  .chat-typing-wrap {
+    animation: none !important;
+    opacity: 1 !important;
+  }
+  .chat-ping-ring {
+    animation: none !important;
+    opacity: 0 !important;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

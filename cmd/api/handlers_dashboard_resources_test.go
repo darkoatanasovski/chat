@@ -8,7 +8,7 @@ import (
 
 func TestDashboardEndUsers_CreateAndList(t *testing.T) {
 	app := testApp(t)
-	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "End Users Org", "PRO")
+	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "End Users Org")
 	appID, _, _ := createTestApp(t, app, orgID, ownerToken)
 
 	var created dashboardEndUserResponse
@@ -39,10 +39,10 @@ func TestDashboardEndUsers_CreateAndList(t *testing.T) {
 
 func TestDashboardEndUsers_CrossOrgIsolation(t *testing.T) {
 	app := testApp(t)
-	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Owner Org", "FREE")
+	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Owner Org")
 	appID, _, _ := createTestApp(t, app, orgID, ownerToken)
 
-	otherToken, _, _ := signUpDashboardOrg(t, app, "Other Org", "FREE")
+	otherToken, _, _ := signUpDashboardOrg(t, app, "Other Org")
 	rec := do(t, app, authed(jsonRequest("GET", fmt.Sprintf("/dashboard/apps/%d/users", appID), nil), otherToken), nil)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-org list end users: status = %d, want 403", rec.Code)
@@ -71,7 +71,11 @@ func createDashboardEndUser(t *testing.T, app *App, ownerToken string, appID int
 
 func TestDashboardChannels_CreateListAndMembers(t *testing.T) {
 	app := testApp(t)
-	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Channels Org", "PRO")
+	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Channels Org")
+	// FREE (the only tier self-serve signup can produce) allows one app per
+	// org; this test needs a second app in the SAME org below to exercise
+	// the same-org cross-app rejection, so bump it past that limit.
+	bumpOrgTierForTest(t, app, orgID, "PRO")
 	appID, _, _ := createTestApp(t, app, orgID, ownerToken)
 
 	creatorID := createDashboardEndUser(t, app, ownerToken, appID, "Creator")
@@ -140,7 +144,7 @@ func TestDashboardChannels_CreateListAndMembers(t *testing.T) {
 
 func TestDashboardChannels_CrossOrgIsolation(t *testing.T) {
 	app := testApp(t)
-	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Channel Owner Org", "FREE")
+	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Channel Owner Org")
 	appID, _, _ := createTestApp(t, app, orgID, ownerToken)
 	creatorID := createDashboardEndUser(t, app, ownerToken, appID, "Creator")
 
@@ -149,7 +153,7 @@ func TestDashboardChannels_CrossOrgIsolation(t *testing.T) {
 		Name: "private", CreatorUserID: creatorID,
 	}), ownerToken), &ch)
 
-	otherToken, _, _ := signUpDashboardOrg(t, app, "Channel Other Org", "FREE")
+	otherToken, _, _ := signUpDashboardOrg(t, app, "Channel Other Org")
 	rec := do(t, app, authed(jsonRequest("GET", fmt.Sprintf("/dashboard/channels/%s/members", ch.ChannelID), nil), otherToken), nil)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-org list members: status = %d, want 403", rec.Code)

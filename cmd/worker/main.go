@@ -50,6 +50,13 @@ func main() {
 
 	publisher := events.NewPublisher(pool, writer, m)
 
+	if err := startRetentionSweeper(ctx, cfg, log, m, pool); err != nil {
+		// Retention is maintenance, not correctness-critical to any request
+		// path — log and keep the outbox publisher running rather than
+		// taking the whole instance down over it.
+		log.Error("retention sweeper not started", "error", err)
+	}
+
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", metrics.Handler())
 	mux.Handle("/healthz", health.Handler(map[string]health.Checker{

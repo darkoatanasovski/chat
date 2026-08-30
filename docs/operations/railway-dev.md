@@ -90,6 +90,7 @@ topology instead.
    VALKEY_ADDR=<redis private host>:<port>
    KAFKA_BROKERS=kafka.railway.internal:9092
    AUTH_SECRET=<generate: openssl rand -hex 32>
+   APP_SECRET_ENCRYPTION_KEY=<generate: openssl rand -base64 32>
    SHARDS_CONFIG=/etc/chat/shards.yaml
    TIERS_CONFIG=/etc/chat/tiers.yaml
    PEER_API_EU_URL=https://<api's public Railway domain>

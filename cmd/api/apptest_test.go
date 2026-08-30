@@ -8,6 +8,7 @@ import (
 
 	"github.com/darkoatanasovski/chat/internal/apps"
 	"github.com/darkoatanasovski/chat/internal/blocks"
+	"github.com/darkoatanasovski/chat/internal/bookmarks"
 	"github.com/darkoatanasovski/chat/internal/channels"
 	"github.com/darkoatanasovski/chat/internal/membership"
 	"github.com/darkoatanasovski/chat/internal/messages"
@@ -16,6 +17,8 @@ import (
 	"github.com/darkoatanasovski/chat/internal/platform/auth"
 	"github.com/darkoatanasovski/chat/internal/platform/config"
 	"github.com/darkoatanasovski/chat/internal/platform/metrics"
+	"github.com/darkoatanasovski/chat/internal/platform/secretbox"
+	"github.com/darkoatanasovski/chat/internal/polls"
 	"github.com/darkoatanasovski/chat/internal/quota"
 	"github.com/darkoatanasovski/chat/internal/reactions"
 	"github.com/darkoatanasovski/chat/internal/readstate"
@@ -35,11 +38,14 @@ import (
 func buildTestApp() (*App, error) {
 	ctx := context.Background()
 	cfg := config.Config{
-		Region:             "eu",
-		AuthSecret:         "test-secret-do-not-use-in-prod",
-		ShardsConfigPath:   "../../deploy/shards.yaml",
-		TiersConfigPath:    "../../deploy/tiers.yaml",
-		CORSAllowedOrigins: []string{"http://localhost:3000"},
+		Region:     "eu",
+		AuthSecret: "test-secret-do-not-use-in-prod",
+		// 32 bytes exactly (secretbox.KeySize) — any fixed test value
+		// works, same spirit as AuthSecret above.
+		AppSecretEncryptionKey: []byte("test-app-secret-encryption-key!!"),
+		ShardsConfigPath:       "../../deploy/shards.yaml",
+		TiersConfigPath:        "../../deploy/tiers.yaml",
+		CORSAllowedOrigins:     []string{"http://localhost:3000"},
 	}
 
 	controlPool, err := pgstorage.Connect(ctx, "postgres://chat:chat@localhost:5433/chat?sslmode=disable")
@@ -81,7 +87,11 @@ func buildTestApp() (*App, error) {
 	orgUsersRepo := orgusers.NewRepo(controlPool)
 	orgInvitesRepo := orgusers.NewInviteRepo(controlPool)
 	appsRepo := apps.NewRepo(controlPool)
-	appCredentials := apps.NewCredentialRepo(controlPool)
+	secretBox, err := secretbox.New(cfg.AppSecretEncryptionKey)
+	if err != nil {
+		return nil, err
+	}
+	appCredentials := apps.NewCredentialRepo(controlPool, secretBox)
 	appTiers := apps.NewTierResolver(redisClient, appsRepo.TierSource)
 
 	m := metrics.New("chat_api_test")
@@ -108,8 +118,10 @@ func buildTestApp() (*App, error) {
 		membershipRepo:  membership.NewRepo(controlPool),
 		messagesRepo:    messages.NewRepo(),
 		reactionsRepo:   reactions.NewRepo(),
+		pollsRepo:       polls.NewRepo(),
 		readStateRepo:   readstate.NewRepo(),
 		blocksRepo:      blocks.NewRepo(controlPool),
+		bookmarksRepo:   bookmarks.NewRepo(controlPool),
 		membershipCache: realtime.NewMembershipCache(redisClient, m),
 		blocksCache:     realtime.NewBlocksCache(redisClient, m),
 		peerClient:      newPeerClient(),

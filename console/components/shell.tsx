@@ -3,17 +3,22 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { motion } from "framer-motion";
-import { Boxes, Gauge, LayoutDashboard, LogOut, MessagesSquare, Users } from "lucide-react";
+import { Boxes, CreditCard, Gauge, LayoutDashboard, LogOut, MessagesSquare, Users } from "lucide-react";
 import { loadSession, clearSession, saveSession } from "@/lib/session";
 import { getUsage, ApiError } from "@/lib/api";
 import type { Session, Usage } from "@/lib/types";
 import { Avatar, Badge, cx } from "./ui";
 
+// Overview is the org-wide summary (totals across every app); each app's
+// own page carries the per-app breakdown on its Dashboard tab. There's no
+// standalone Polls entry anymore — poll activity is per-app only, on that
+// same Dashboard tab.
 const NAV_ITEMS = [
-  { href: "/overview", label: "Overview", icon: LayoutDashboard },
-  { href: "/apps", label: "Apps", icon: Boxes },
-  { href: "/team", label: "Team", icon: Users },
-  { href: "/usage", label: "Usage", icon: Gauge },
+  { href: "/console/overview", label: "Overview", icon: LayoutDashboard },
+  { href: "/console/apps", label: "Apps", icon: Boxes },
+  { href: "/console/team", label: "Team", icon: Users },
+  { href: "/console/usage", label: "Usage", icon: Gauge },
+  { href: "/console/billing", label: "Billing", icon: CreditCard },
 ];
 
 const SessionContext = createContext<{ session: Session; setSession: (s: Session) => void } | null>(null);
@@ -36,7 +41,7 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     const s = loadSession();
     if (!s) {
-      router.replace("/login");
+      router.replace("/console/login");
       return;
     }
     setSessionState(s);
@@ -56,7 +61,7 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
 
   function signOut() {
     clearSession();
-    router.replace("/login");
+    router.replace("/console/login");
   }
 
   if (session === undefined) {
@@ -129,7 +134,11 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
               <div className="text-[15px] font-semibold text-text">{session.org.name}</div>
               <div className="text-xs text-text-faint">Organization</div>
             </div>
-            <Badge tone="accent">{session.org.tier}</Badge>
+            <a href="/console/billing">
+              <Badge tone="accent" className="cursor-pointer transition-opacity duration-150 hover:opacity-80">
+                {session.org.tier}
+              </Badge>
+            </a>
           </header>
           <main className="min-h-0 flex-1 overflow-y-auto px-10 py-9">{children}</main>
         </div>
@@ -175,7 +184,11 @@ function UsageGauge({ usage }: { usage: Usage }) {
         <div className="text-[11px] text-text-faint">
           Apps on <span className="text-text-muted">{usage.tier}</span>
         </div>
-        {nearLimit && usage.tier !== "ENTERPRISE" && <div className="mt-0.5 text-[11px] text-warning">Nearing your plan limit</div>}
+        {nearLimit && usage.tier !== "ENTERPRISE" && (
+          <a href="/console/billing" className="mt-0.5 block text-[11px] text-warning underline-offset-2 hover:underline">
+            Nearing your plan limit — upgrade
+          </a>
+        )}
       </div>
     </div>
   );

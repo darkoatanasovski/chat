@@ -73,7 +73,7 @@ func TestHandleBlockUser_CrossAppIsolation(t *testing.T) {
 
 	_, keyB, secretB := createOrgAndApp(t, app, "FREE")
 	var outsider createUserResponse
-	rec := do(t, app, basicAuthed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "block-cross-b", Region: "eu"}), keyB, secretB), &outsider)
+	rec := do(t, app, authed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "block-cross-b", Region: "eu"}), appAccessToken(t, app, keyB, secretB)), &outsider)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create app-b user: status = %d, body = %s", rec.Code, rec.Body.String())
 	}

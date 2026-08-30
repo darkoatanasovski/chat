@@ -9,10 +9,12 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/dodopayments/dodopayments-go"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/darkoatanasovski/chat/internal/apps"
 	"github.com/darkoatanasovski/chat/internal/blocks"
+	"github.com/darkoatanasovski/chat/internal/bookmarks"
 	"github.com/darkoatanasovski/chat/internal/channels"
 	"github.com/darkoatanasovski/chat/internal/membership"
 	"github.com/darkoatanasovski/chat/internal/messages"
@@ -21,6 +23,7 @@ import (
 	"github.com/darkoatanasovski/chat/internal/platform/auth"
 	"github.com/darkoatanasovski/chat/internal/platform/config"
 	"github.com/darkoatanasovski/chat/internal/platform/metrics"
+	"github.com/darkoatanasovski/chat/internal/polls"
 	"github.com/darkoatanasovski/chat/internal/quota"
 	"github.com/darkoatanasovski/chat/internal/reactions"
 	"github.com/darkoatanasovski/chat/internal/readstate"
@@ -63,12 +66,19 @@ type App struct {
 	membershipRepo  *membership.Repo
 	messagesRepo    *messages.Repo
 	reactionsRepo   *reactions.Repo
+	pollsRepo       *polls.Repo
 	readStateRepo   *readstate.Repo
 	blocksRepo      *blocks.Repo
+	bookmarksRepo   *bookmarks.Repo
 	membershipCache *realtime.MembershipCache
 	blocksCache     *realtime.BlocksCache
 
 	peerClient *http.Client
+
+	// dodo is always non-nil, even when billing is unconfigured (empty
+	// cfg.DodoAPIKey) — handlers_billing.go checks cfg.DodoAPIKey before
+	// using it, so an unconfigured client is simply never called.
+	dodo *dodopayments.Client
 }
 
 func (a *App) shardPoolFor(channelID string) (pool *pgxpool.Pool, physicalShardID string, virtualShard int, err error) {

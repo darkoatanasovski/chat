@@ -32,7 +32,7 @@ func TestConnectHandler_RelayTyping_DeliversToOtherMembers(t *testing.T) {
 	otherConn := hub.Register(other, "eu")
 
 	delivery := NewDelivery(hub, cache, nil, nil, nil, NewRegistry(client, nil), NewPublisher(client, nil), discardLogger())
-	h := NewConnectHandler(nil, hub, NewRegistry(client, nil), delivery, "eu-test", nil, discardLogger())
+	h := NewConnectHandler(nil, hub, NewRegistry(client, nil), delivery, "eu-test", nil, discardLogger(), nil)
 
 	h.relayTyping(ctx, typist, channelID, true)
 
@@ -77,7 +77,7 @@ func TestConnectHandler_RelayTyping_RequiresMembership(t *testing.T) {
 	hub.Register(outsider, "eu")
 
 	delivery := NewDelivery(hub, cache, nil, nil, nil, NewRegistry(client, nil), NewPublisher(client, nil), discardLogger())
-	h := NewConnectHandler(nil, hub, NewRegistry(client, nil), delivery, "eu-test", nil, discardLogger())
+	h := NewConnectHandler(nil, hub, NewRegistry(client, nil), delivery, "eu-test", nil, discardLogger(), nil)
 
 	h.relayTyping(ctx, outsider, channelID, true)
 

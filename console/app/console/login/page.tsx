@@ -21,7 +21,7 @@ export default function LoginPage() {
     try {
       const session = await login(email, password);
       saveSession(session);
-      router.push("/overview");
+      router.push("/console/overview");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
     } finally {
@@ -57,7 +57,7 @@ export default function LoginPage() {
         </Panel>
         <p className="mt-6 text-center text-[15px] text-text-muted">
           Don&apos;t have an account?{" "}
-          <a href="/signup" className="text-accent hover:underline">
+          <a href="/console/signup" className="text-accent hover:underline">
             Create one
           </a>
         </p>

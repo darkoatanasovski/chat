@@ -24,8 +24,13 @@ for TIER in FREE PRO BUSINESS ENTERPRISE; do
 done
 
 echo "==> creating demo users (alice, bob) under the FREE-tier demo app"
-ALICE=$(curl -sf -X POST "$API_EU/users" -u "${APP_KEY[FREE]}:${APP_SECRET[FREE]}" -d '{"display_name":"Alice","region":"eu"}')
-BOB=$(curl -sf -X POST "$API_US/users" -u "${APP_KEY[FREE]}:${APP_SECRET[FREE]}" -d '{"display_name":"Bob","region":"us"}')
+# POST /users now runs on a short-lived app JWT (requireAppJWT), not the raw
+# key:secret directly — exchange once per region via POST /apps/token
+# (requireAppCredentials, Basic auth) first, same as demo/lib/api.ts does.
+EU_APP_TOKEN=$(curl -sf -X POST "$API_EU/apps/token" -u "${APP_KEY[FREE]}:${APP_SECRET[FREE]}" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+US_APP_TOKEN=$(curl -sf -X POST "$API_US/apps/token" -u "${APP_KEY[FREE]}:${APP_SECRET[FREE]}" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+ALICE=$(curl -sf -X POST "$API_EU/users" -H "Authorization: Bearer $EU_APP_TOKEN" -d '{"display_name":"Alice","region":"eu"}')
+BOB=$(curl -sf -X POST "$API_US/users" -H "Authorization: Bearer $US_APP_TOKEN" -d '{"display_name":"Bob","region":"us"}')
 
 ALICE_TOKEN=$(echo "$ALICE" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
 ALICE_ID=$(echo "$ALICE" | python3 -c "import sys,json;print(json.load(sys.stdin)['user_id'])")

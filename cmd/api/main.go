@@ -7,8 +7,12 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/dodopayments/dodopayments-go"
+	"github.com/dodopayments/dodopayments-go/option"
+
 	"github.com/darkoatanasovski/chat/internal/apps"
 	"github.com/darkoatanasovski/chat/internal/blocks"
+	"github.com/darkoatanasovski/chat/internal/bookmarks"
 	"github.com/darkoatanasovski/chat/internal/channels"
 	"github.com/darkoatanasovski/chat/internal/membership"
 	"github.com/darkoatanasovski/chat/internal/messages"
@@ -19,6 +23,8 @@ import (
 	"github.com/darkoatanasovski/chat/internal/platform/debug"
 	"github.com/darkoatanasovski/chat/internal/platform/logging"
 	"github.com/darkoatanasovski/chat/internal/platform/metrics"
+	"github.com/darkoatanasovski/chat/internal/platform/secretbox"
+	"github.com/darkoatanasovski/chat/internal/polls"
 	"github.com/darkoatanasovski/chat/internal/quota"
 	"github.com/darkoatanasovski/chat/internal/reactions"
 	"github.com/darkoatanasovski/chat/internal/readstate"
@@ -85,8 +91,30 @@ func main() {
 	orgUsersRepo := orgusers.NewRepo(controlPool)
 	orgInvitesRepo := orgusers.NewInviteRepo(controlPool)
 	appsRepo := apps.NewRepo(controlPool)
-	appCredentials := apps.NewCredentialRepo(controlPool)
+
+	// Only cmd/api ever mints or reveals app credentials, so this is the
+	// one place APP_SECRET_ENCRYPTION_KEY is required — see config.go's
+	// doc comment on AppSecretEncryptionKey for why Load() itself doesn't
+	// enforce that (cmd/gateway and cmd/worker call Load() too, and never
+	// touch it).
+	secretBox, err := secretbox.New(cfg.AppSecretEncryptionKey)
+	if err != nil {
+		log.Error("build secretbox for app credentials", "error", err, "hint", "set APP_SECRET_ENCRYPTION_KEY to a base64-encoded 32-byte key, e.g. `openssl rand -base64 32`")
+		os.Exit(1)
+	}
+	appCredentials := apps.NewCredentialRepo(controlPool, secretBox)
 	appTiers := apps.NewTierResolver(redisClient, appsRepo.TierSource)
+
+	dodoOpts := []option.RequestOption{
+		option.WithBearerToken(cfg.DodoAPIKey),
+		option.WithWebhookKey(cfg.DodoWebhookKey),
+	}
+	if cfg.DodoLiveMode {
+		dodoOpts = append(dodoOpts, option.WithEnvironmentLiveMode())
+	} else {
+		dodoOpts = append(dodoOpts, option.WithEnvironmentTestMode())
+	}
+	dodoClient := dodopayments.NewClient(dodoOpts...)
 
 	app := &App{
 		cfg:             cfg,
@@ -111,11 +139,14 @@ func main() {
 		membershipRepo:  membership.NewRepo(controlPool),
 		messagesRepo:    messages.NewRepo(),
 		reactionsRepo:   reactions.NewRepo(),
+		pollsRepo:       polls.NewRepo(),
 		readStateRepo:   readstate.NewRepo(),
 		blocksRepo:      blocks.NewRepo(controlPool),
+		bookmarksRepo:   bookmarks.NewRepo(controlPool),
 		membershipCache: realtime.NewMembershipCache(redisClient, m),
 		blocksCache:     realtime.NewBlocksCache(redisClient, m),
 		peerClient:      newPeerClient(),
+		dodo:            dodoClient,
 	}
 
 	metricsMux := http.NewServeMux()
