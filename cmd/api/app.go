@@ -18,6 +18,7 @@ import (
 	"github.com/darkoatanasovski/chat/internal/channels"
 	"github.com/darkoatanasovski/chat/internal/membership"
 	"github.com/darkoatanasovski/chat/internal/messages"
+	"github.com/darkoatanasovski/chat/internal/mutes"
 	"github.com/darkoatanasovski/chat/internal/organizations"
 	"github.com/darkoatanasovski/chat/internal/orgusers"
 	"github.com/darkoatanasovski/chat/internal/platform/auth"
@@ -28,6 +29,7 @@ import (
 	"github.com/darkoatanasovski/chat/internal/reactions"
 	"github.com/darkoatanasovski/chat/internal/readstate"
 	"github.com/darkoatanasovski/chat/internal/realtime"
+	"github.com/darkoatanasovski/chat/internal/reminders"
 	"github.com/darkoatanasovski/chat/internal/routing"
 	pgstorage "github.com/darkoatanasovski/chat/internal/storage/postgres"
 	"github.com/darkoatanasovski/chat/internal/users"
@@ -68,7 +70,9 @@ type App struct {
 	reactionsRepo   *reactions.Repo
 	pollsRepo       *polls.Repo
 	readStateRepo   *readstate.Repo
+	remindersRepo   *reminders.Repo
 	blocksRepo      *blocks.Repo
+	mutesRepo       *mutes.Repo
 	bookmarksRepo   *bookmarks.Repo
 	membershipCache *realtime.MembershipCache
 	blocksCache     *realtime.BlocksCache

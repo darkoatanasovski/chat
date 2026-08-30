@@ -90,6 +90,46 @@ export function Label({ children }: { children: ReactNode }) {
   return <label className="mb-2 block text-sm font-medium text-text-muted">{children}</label>;
 }
 
+// Switch is a toggle control — the "Channel Capabilities" panel's building
+// block (console/app/console/apps/[id]/page.tsx's SettingsTab) but generic
+// enough for any other on/off setting. Uncontrolled internally: the parent
+// always owns `checked` and reacts to onChange, same pattern as a native
+// checkbox, so a parent can debounce/persist however it needs to (see
+// SettingsTab's optimistic-update-then-PATCH approach).
+export function Switch({
+  checked,
+  onChange,
+  disabled,
+  label,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+  label?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={cx(
+        "relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-150",
+        "disabled:cursor-not-allowed disabled:opacity-40",
+        checked ? "bg-accent" : "bg-surface-2 border border-border"
+      )}
+    >
+      <motion.span
+        layout
+        transition={{ type: "spring", stiffness: 500, damping: 32 }}
+        className={cx("block h-4.5 w-4.5 rounded-full bg-bg shadow-sm", checked ? "ml-[22px]" : "ml-1")}
+      />
+    </button>
+  );
+}
+
 type BadgeTone = "default" | "success" | "danger" | "warning" | "accent";
 
 const badgeToneClasses: Record<BadgeTone, string> = {

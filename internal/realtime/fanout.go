@@ -94,6 +94,19 @@ type MessagePinDeliveryFrame struct {
 	PinnedBy  *uuid.UUID `json:"pinned_by"`
 }
 
+// CustomEventDeliveryFrame is the JSON payload pushed to WebSocket clients
+// for custom.event — see events.CustomEventPayload's doc comment for what
+// EventType/Data mean; this is simply that payload's realtime-wire shape
+// (Type replaces the Kafka topic name the way every other *DeliveryFrame
+// does).
+type CustomEventDeliveryFrame struct {
+	Type      string          `json:"type"`
+	ChannelID uuid.UUID       `json:"channel_id"`
+	SenderID  uuid.UUID       `json:"sender_id"`
+	EventType string          `json:"event_type"`
+	Data      json.RawMessage `json:"data,omitempty"`
+}
+
 // MessageSource is the minimal *kafkago.Reader surface Fanout.Run needs —
 // narrow enough that tests can fake the read/commit loop without a live
 // Kafka broker. *kafkago.Reader satisfies this directly.
@@ -292,6 +305,12 @@ func (f *Fanout) handle(ctx context.Context, msg kafkago.Message) error {
 		return f.handleMessageEdited(ctx, msg)
 	case events.TopicMessagePinUpdated:
 		return f.handleMessagePinUpdated(ctx, msg)
+	case events.TopicCustomEvent:
+		return f.handleCustomEvent(ctx, msg)
+	case events.TopicMessageReminderDue:
+		return f.handleMessageReminderDue(ctx, msg)
+	case events.TopicUnreadReminderDue:
+		return f.handleUnreadReminderDue(ctx, msg)
 	default:
 		// Empty/unrecognized Topic falls through to message.created too —
 		// tests construct kafkago.Message without setting Topic, and this
@@ -485,4 +504,136 @@ func (f *Fanout) handleReadUpdated(ctx context.Context, msg kafkago.Message) err
 	}
 
 	return f.delivery.ToChannelMembers(ctx, payload.ChannelID, frame, payload.UserID, uuid.Nil)
+}
+
+// handleCustomEvent relays a client-published custom event to every other
+// member of its channel — the "custom_events" capability. cmd/api's
+// handleSendCustomEvent has already verified the capability was on and the
+// sender was a member before writing the outbox row this consumes, so
+// there's nothing further to authorize here; this is pure delivery, same
+// division of responsibility as every other *Updated event.
+func (f *Fanout) handleCustomEvent(ctx context.Context, msg kafkago.Message) error {
+	var payload events.CustomEventPayload
+	if err := json.Unmarshal(msg.Value, &payload); err != nil {
+		return fmt.Errorf("fanout: unmarshal payload: %w", err)
+	}
+
+	seen, err := f.dedup.SeenBefore(ctx, payload.EventID.String())
+	if err != nil {
+		return err
+	}
+	if seen {
+		return nil
+	}
+
+	frame, err := json.Marshal(CustomEventDeliveryFrame{
+		Type:      "custom.event",
+		ChannelID: payload.ChannelID,
+		SenderID:  payload.SenderID,
+		EventType: payload.EventType,
+		Data:      payload.Data,
+	})
+	if err != nil {
+		return fmt.Errorf("fanout: marshal custom event delivery frame: %w", err)
+	}
+
+	// Unlike message.created, the sender is NOT excluded here — a custom
+	// event has no independent "sender already has this from the HTTP
+	// response" precedent, so it's delivered back to every member
+	// including whoever sent it, matching how a client that fires a custom
+	// event usually wants its own other connections/devices to see it too.
+	return f.delivery.ToChannelMembers(ctx, payload.ChannelID, frame, payload.SenderID, uuid.Nil)
+}
+
+// MessageReminderDueFrame is the JSON payload pushed to WebSocket clients
+// for message_reminder.due — see events.MessageReminderDuePayload's doc
+// comment; delivered to exactly one recipient via Delivery.ToUser, not
+// broadcast to the channel.
+type MessageReminderDueFrame struct {
+	Type       string    `json:"type"`
+	ReminderID uuid.UUID `json:"reminder_id"`
+	ChannelID  uuid.UUID `json:"channel_id"`
+	MessageID  uuid.UUID `json:"message_id"`
+}
+
+// handleMessageReminderDue relays one due reminder to the single user who
+// set it — internal/reminders.Repo.DeliverDue (cmd/worker) has already
+// atomically marked it delivered and written this outbox row in the same
+// transaction, so this is pure best-effort delivery: if the user isn't
+// connected right now, the reminder is still recorded as delivered and
+// simply never reaches a live socket (this codebase has no push-
+// notification fallback — see INSTRUCTIONS.md §18 on WebSocket delivery
+// being best-effort throughout).
+func (f *Fanout) handleMessageReminderDue(ctx context.Context, msg kafkago.Message) error {
+	var payload events.MessageReminderDuePayload
+	if err := json.Unmarshal(msg.Value, &payload); err != nil {
+		return fmt.Errorf("fanout: unmarshal payload: %w", err)
+	}
+
+	seen, err := f.dedup.SeenBefore(ctx, payload.ReminderID.String())
+	if err != nil {
+		return err
+	}
+	if seen {
+		return nil
+	}
+
+	frame, err := json.Marshal(MessageReminderDueFrame{
+		Type:       "message_reminder.due",
+		ReminderID: payload.ReminderID,
+		ChannelID:  payload.ChannelID,
+		MessageID:  payload.MessageID,
+	})
+	if err != nil {
+		return fmt.Errorf("fanout: marshal message reminder delivery frame: %w", err)
+	}
+	return f.delivery.ToUser(ctx, payload.UserID, frame)
+}
+
+// UnreadReminderDueFrame is the JSON payload pushed to WebSocket clients for
+// unread_reminder.due — single-recipient, same as MessageReminderDueFrame.
+type UnreadReminderDueFrame struct {
+	Type             string    `json:"type"`
+	ChannelID        uuid.UUID `json:"channel_id"`
+	LastReadSequence int64     `json:"last_read_sequence"`
+	LatestSequence   int64     `json:"latest_sequence"`
+}
+
+// handleUnreadReminderDue relays one unread-channel notice to the single
+// member it concerns — cmd/worker's unread sweep has already decided this
+// member is both behind and due for another nudge (respecting its own
+// minimum-gap cooldown) before writing this outbox row, so, like
+// handleMessageReminderDue, this is pure best-effort delivery with nothing
+// further to authorize.
+func (f *Fanout) handleUnreadReminderDue(ctx context.Context, msg kafkago.Message) error {
+	var payload events.UnreadReminderDuePayload
+	if err := json.Unmarshal(msg.Value, &payload); err != nil {
+		return fmt.Errorf("fanout: unmarshal payload: %w", err)
+	}
+
+	// Deduped by (channel, user, last_read_sequence): the same stale
+	// watermark should only ever produce one nudge, even if the sweep
+	// somehow ran twice before the outbox row was picked up — but a
+	// genuinely new nudge (the member read further, then fell behind
+	// again) has a different LastReadSequence and is correctly treated as
+	// a fresh event.
+	dedupKey := fmt.Sprintf("%s:%s:%d", payload.ChannelID, payload.UserID, payload.LastReadSequence)
+	seen, err := f.dedup.SeenBefore(ctx, dedupKey)
+	if err != nil {
+		return err
+	}
+	if seen {
+		return nil
+	}
+
+	frame, err := json.Marshal(UnreadReminderDueFrame{
+		Type:             "unread_reminder.due",
+		ChannelID:        payload.ChannelID,
+		LastReadSequence: payload.LastReadSequence,
+		LatestSequence:   payload.LatestSequence,
+	})
+	if err != nil {
+		return fmt.Errorf("fanout: marshal unread reminder delivery frame: %w", err)
+	}
+	return f.delivery.ToUser(ctx, payload.UserID, frame)
 }

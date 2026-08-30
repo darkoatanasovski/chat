@@ -165,6 +165,46 @@ type UserChannel struct {
 	LastMessageAt       *time.Time
 }
 
+// UnreadReminderCandidates returns channelID's member user_ids that are due
+// a fresh nudge attempt — last_unread_reminder_sent_at is null (never
+// reminded) or older than cutoff (cmd/worker's minimum-gap cooldown,
+// computed by the caller as now()-minGap) — the "unread_reminders"
+// capability. This is only the cooldown filter: the caller still has to
+// check each candidate's actual read state (internal/readstate, a
+// different database) before deciding whether they're truly behind.
+func (r *Repo) UnreadReminderCandidates(ctx context.Context, channelID uuid.UUID, cutoff time.Time) ([]uuid.UUID, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT user_id FROM channel_members
+		WHERE channel_id = $1 AND (last_unread_reminder_sent_at IS NULL OR last_unread_reminder_sent_at < $2)
+	`, channelID, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("membership: unread reminder candidates: %w", err)
+	}
+	defer rows.Close()
+
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("membership: scan: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// MarkUnreadReminderSent stamps last_unread_reminder_sent_at = now() so
+// UnreadReminderCandidates won't offer this member again until the next
+// cooldown window passes.
+func (r *Repo) MarkUnreadReminderSent(ctx context.Context, channelID, userID uuid.UUID) error {
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE channel_members SET last_unread_reminder_sent_at = now() WHERE channel_id = $1 AND user_id = $2
+	`, channelID, userID); err != nil {
+		return fmt.Errorf("membership: mark unread reminder sent: %w", err)
+	}
+	return nil
+}
+
 func (r *Repo) ListChannelsForUser(ctx context.Context, userID uuid.UUID) ([]UserChannel, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT uc.channel_id, c.name, c.home_region, uc.last_message_sequence, uc.last_message_at

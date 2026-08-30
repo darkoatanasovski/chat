@@ -36,6 +36,12 @@ type Metrics struct {
 	CrossRegionLatency *prometheus.HistogramVec
 
 	MessagesExpiredTotal prometheus.Counter
+
+	// UnreadRemindersSentTotal counts unread.reminder notices cmd/worker's
+	// UnreadSweeper has actually written to the outbox — the
+	// "unread_reminders" capability. Same "background job gets its own
+	// counter" precedent as MessagesExpiredTotal.
+	UnreadRemindersSentTotal prometheus.Counter
 }
 
 func New(namespace string) *Metrics {
@@ -101,6 +107,9 @@ func New(namespace string) *Metrics {
 
 		MessagesExpiredTotal: promauto.NewCounter(prometheus.CounterOpts{
 			Namespace: namespace, Name: "messages_expired_total",
+		}),
+		UnreadRemindersSentTotal: promauto.NewCounter(prometheus.CounterOpts{
+			Namespace: namespace, Name: "unread_reminders_sent_total",
 		}),
 	}
 }

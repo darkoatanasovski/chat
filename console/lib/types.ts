@@ -16,10 +16,56 @@ export interface Session {
   org: DashboardOrg;
 }
 
+// ChannelCapabilities mirrors internal/apps.ChannelCapabilities field for
+// field (same snake_case json keys) — the "Channel Capabilities" panel on
+// the Settings tab. See that Go type's per-field doc comments for exactly
+// what each one gates and any scope limitations.
+export interface ChannelCapabilities {
+  typing_events: boolean;
+  read_events: boolean;
+  connection_events: boolean;
+  custom_events: boolean;
+  reactions: boolean;
+  search: boolean;
+  threads_and_replies: boolean;
+  quotes: boolean;
+  mutes: boolean;
+  uploads: boolean;
+  url_enrichment: boolean;
+  message_count: boolean;
+  message_reminders: boolean;
+  unread_reminders: boolean;
+  pending_messages: boolean;
+  polls: boolean;
+  strict_last_message_time: boolean;
+  location_sharing: boolean;
+  delivery_events: boolean;
+}
+
 export interface AppSummary {
   app_id: number;
   name: string;
   created_at: string;
+  max_thread_depth: number;
+  message_edit_enabled: boolean;
+  channel_capabilities: ChannelCapabilities;
+  max_message_length: number;
+  enabled_commands: string[];
+  dynamic_partitioning: boolean;
+}
+
+// UpdateAppRequest is PATCH /apps/{app_id}'s request body — every field
+// optional (a partial update only touches what's set), mirroring
+// cmd/api/handlers_apps.go's updateAppRequest. channel_capabilities is
+// itself partial: only the keys present get merged onto the app's current
+// set (see that handler's doc comment on the json.RawMessage-merge trick).
+export interface UpdateAppRequest {
+  max_thread_depth?: number;
+  message_edit_enabled?: boolean;
+  channel_capabilities?: Partial<ChannelCapabilities>;
+  max_message_length?: number;
+  enabled_commands?: string[];
+  dynamic_partitioning?: boolean;
 }
 
 export interface Credential {

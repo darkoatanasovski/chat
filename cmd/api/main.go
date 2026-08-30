@@ -16,6 +16,7 @@ import (
 	"github.com/darkoatanasovski/chat/internal/channels"
 	"github.com/darkoatanasovski/chat/internal/membership"
 	"github.com/darkoatanasovski/chat/internal/messages"
+	"github.com/darkoatanasovski/chat/internal/mutes"
 	"github.com/darkoatanasovski/chat/internal/organizations"
 	"github.com/darkoatanasovski/chat/internal/orgusers"
 	"github.com/darkoatanasovski/chat/internal/platform/auth"
@@ -29,6 +30,7 @@ import (
 	"github.com/darkoatanasovski/chat/internal/reactions"
 	"github.com/darkoatanasovski/chat/internal/readstate"
 	"github.com/darkoatanasovski/chat/internal/realtime"
+	"github.com/darkoatanasovski/chat/internal/reminders"
 	"github.com/darkoatanasovski/chat/internal/routing"
 	pgstorage "github.com/darkoatanasovski/chat/internal/storage/postgres"
 	redisstorage "github.com/darkoatanasovski/chat/internal/storage/redis"
@@ -141,7 +143,9 @@ func main() {
 		reactionsRepo:   reactions.NewRepo(),
 		pollsRepo:       polls.NewRepo(),
 		readStateRepo:   readstate.NewRepo(),
+		remindersRepo:   reminders.NewRepo(),
 		blocksRepo:      blocks.NewRepo(controlPool),
+		mutesRepo:       mutes.NewRepo(controlPool),
 		bookmarksRepo:   bookmarks.NewRepo(controlPool),
 		membershipCache: realtime.NewMembershipCache(redisClient, m),
 		blocksCache:     realtime.NewBlocksCache(redisClient, m),

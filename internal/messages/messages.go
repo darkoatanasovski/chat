@@ -38,6 +38,47 @@ var (
 // checkChannelWriteAccess re-verifying route.AppID against the caller's app.
 var ErrNotMessageOwner = errors.New("messages: only the sender may edit this message")
 
+// Status values for Message.Status — see the "pending_messages" capability
+// and migrations/shard/0011_channel_capabilities.sql's doc comment. Every
+// message sent while an app's pending_messages capability is off is created
+// directly as StatusSent; there is no other transition into StatusPending
+// today besides Send opting into it at creation time (no separate "submit
+// for review" endpoint exists yet — see cmd/api/handlers_moderation.go).
+const (
+	StatusSent    = "sent"
+	StatusPending = "pending"
+)
+
+// Attachment is one client-supplied file/media reference — the "uploads"
+// capability. This API never hosts files itself; an app integrates its own
+// object storage (S3/GCS/CDN) and sends the resulting URL here (see
+// migrations/shard/0011's doc comment on the attachments column).
+type Attachment struct {
+	URL       string `json:"url"`
+	Type      string `json:"type,omitempty"`
+	Filename  string `json:"filename,omitempty"`
+	SizeBytes int64  `json:"size_bytes,omitempty"`
+}
+
+// LinkPreview is the "url_enrichment" capability's best-effort metadata for
+// the first URL found in a message's body — filled in asynchronously after
+// the message is created (see cmd/api's enrichLinkPreview) by a fire-and-
+// forget fetch that never blocks or fails the send itself. Nil until that
+// fetch completes, or forever if it never does (disabled, no URL in the
+// body, fetch failed/timed out).
+type LinkPreview struct {
+	URL         string `json:"url"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// Location is the "location_sharing" capability's optional point shared via
+// a message send.
+type Location struct {
+	Lat float64 `json:"lat"`
+	Lng float64 `json:"lng"`
+}
+
 type Message struct {
 	ChannelID       uuid.UUID
 	Sequence        int64
@@ -94,6 +135,29 @@ type Message struct {
 	// exactly one "is this pinned" answer per message, not one per viewer.
 	PinnedAt *time.Time
 	PinnedBy *uuid.UUID
+	// QuotedMessageID is nil unless this message quotes another message in
+	// the same channel — the "quotes" capability
+	// (migrations/shard/0011_channel_capabilities.sql). Validated at the
+	// application layer (cmd/api, via Exists, same channel only) before
+	// Send is ever called; there's no DB FK the way parent_id also lacks
+	// one (see that column's own doc comment for why), so Send trusts the
+	// caller here exactly like it trusts pollID.
+	QuotedMessageID *uuid.UUID
+	// Attachments is always a non-nil (possibly empty) slice — the
+	// "uploads" capability. See Attachment's doc comment for scope.
+	Attachments []Attachment
+	// LinkPreview is nil until url_enrichment's async fetch fills it in (or
+	// forever, if url_enrichment is off for this app, the body had no URL,
+	// or the fetch failed/timed out).
+	LinkPreview *LinkPreview
+	// Location is nil unless this message shared a location — the
+	// "location_sharing" capability.
+	Location *Location
+	// Status is StatusSent (the default, immediately visible to every
+	// member) or StatusPending (visible only to its own sender until an
+	// app-side moderator approves it) — see the "pending_messages"
+	// capability. Every send while that capability is off is StatusSent.
+	Status string
 }
 
 type Repo struct{}
@@ -118,7 +182,34 @@ func NewRepo() *Repo {
 // comment) — Send trusts it and simply stores it; a bad pollID would
 // surface as the messages.poll_id foreign key violation instead of a clean
 // application error, which is why the caller checks first.
-func (r *Repo) Send(ctx context.Context, pool *pgxpool.Pool, channelID, senderID, clientMessageID uuid.UUID, body string, parentID *uuid.UUID, maxDepth int, pollID *uuid.UUID) (msg Message, created bool, err error) {
+//
+// quotedMessageID follows the exact same caller-validated-first contract as
+// pollID (see QuotedMessageID's doc comment) — nil for no quote, or a
+// message_id the caller has already confirmed exists in this channel.
+//
+// attachments is stored as-is (nil is normalized to an empty slice before
+// marshaling, never a SQL NULL, matching the column's NOT NULL DEFAULT
+// '[]'). location is nil for no shared location. status is StatusSent
+// unless the caller (having already checked the app's pending_messages
+// capability) passes StatusPending.
+func (r *Repo) Send(ctx context.Context, pool *pgxpool.Pool, channelID, senderID, clientMessageID uuid.UUID, body string, parentID *uuid.UUID, maxDepth int, pollID *uuid.UUID, quotedMessageID *uuid.UUID, attachments []Attachment, location *Location, status string) (msg Message, created bool, err error) {
+	if attachments == nil {
+		attachments = []Attachment{}
+	}
+	if status == "" {
+		status = StatusSent
+	}
+	attachmentsJSON, err := json.Marshal(attachments)
+	if err != nil {
+		return Message{}, false, fmt.Errorf("messages: marshal attachments: %w", err)
+	}
+	var locationJSON []byte
+	if location != nil {
+		locationJSON, err = json.Marshal(location)
+		if err != nil {
+			return Message{}, false, fmt.Errorf("messages: marshal location: %w", err)
+		}
+	}
 	if existing, ok, ferr := r.getByClientMessageID(ctx, pool, channelID, clientMessageID); ferr != nil {
 		return Message{}, false, ferr
 	} else if ok {
@@ -160,9 +251,9 @@ func (r *Repo) Send(ctx context.Context, pool *pgxpool.Pool, channelID, senderID
 	}
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO messages (channel_id, sequence, message_id, sender_id, client_message_id, body, parent_id, poll_id, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	`, channelID, sequence, messageID, senderID, clientMessageID, body, parentID, pollID, now); err != nil {
+		INSERT INTO messages (channel_id, sequence, message_id, sender_id, client_message_id, body, parent_id, poll_id, created_at, quoted_message_id, attachments, location, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	`, channelID, sequence, messageID, senderID, clientMessageID, body, parentID, pollID, now, quotedMessageID, attachmentsJSON, locationJSON, status); err != nil {
 		if isUniqueViolation(err) {
 			// Lost a race against a concurrent retry with the same
 			// client_message_id: someone else already committed it.
@@ -199,20 +290,29 @@ func (r *Repo) Send(ctx context.Context, pool *pgxpool.Pool, channelID, senderID
 		parentReplyCount = &count
 	}
 
-	payload := events.MessageCreatedPayload{
-		MessageID:        messageID,
-		ChannelID:        channelID,
-		SenderID:         senderID,
-		ClientMessageID:  clientMessageID,
-		Sequence:         sequence,
-		Body:             body,
-		ParentID:         parentID,
-		ParentReplyCount: parentReplyCount,
-		PollID:           pollID,
-		CreatedAt:        now,
-	}
-	if err := events.InsertOutbox(ctx, tx, events.TopicMessageCreated, channelID, payload); err != nil {
-		return Message{}, false, err
+	// A pending message (the "pending_messages" capability) deliberately
+	// does NOT get a message.created event here — it isn't visible to
+	// anyone but its own sender yet, so nothing should be delivered to the
+	// rest of the channel until a moderator approves it (see Approve,
+	// which emits this same event itself once that happens). A sender
+	// still sees their own pending message immediately via this call's own
+	// return value, exactly as it would for a normal send.
+	if status != StatusPending {
+		payload := events.MessageCreatedPayload{
+			MessageID:        messageID,
+			ChannelID:        channelID,
+			SenderID:         senderID,
+			ClientMessageID:  clientMessageID,
+			Sequence:         sequence,
+			Body:             body,
+			ParentID:         parentID,
+			ParentReplyCount: parentReplyCount,
+			PollID:           pollID,
+			CreatedAt:        now,
+		}
+		if err := events.InsertOutbox(ctx, tx, events.TopicMessageCreated, channelID, payload); err != nil {
+			return Message{}, false, err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -232,6 +332,10 @@ func (r *Repo) Send(ctx context.Context, pool *pgxpool.Pool, channelID, senderID
 		CreatedAt:       now,
 		ReactionCounts:  map[string]int{},
 		LatestReactions: []events.ReactionSummary{},
+		QuotedMessageID: quotedMessageID,
+		Attachments:     attachments,
+		Location:        location,
+		Status:          status,
 	}, true, nil
 }
 
@@ -308,7 +412,7 @@ func (r *Repo) Edit(ctx context.Context, pool *pgxpool.Pool, channelID, messageI
 	defer tx.Rollback(ctx)
 
 	var m Message
-	var countsRaw, latestRaw []byte
+	var countsRaw, latestRaw, attachmentsRaw, linkPreviewRaw, locationRaw []byte
 	// sender_id is filtered again here, not just relied on from the check
 	// above — a defense-in-depth guard against a TOCTOU race, even though
 	// nothing in this codebase can currently change a message's sender_id
@@ -316,9 +420,10 @@ func (r *Repo) Edit(ctx context.Context, pool *pgxpool.Pool, channelID, messageI
 	err = tx.QueryRow(ctx, `
 		UPDATE messages SET body = $1, edited_at = $2
 		WHERE channel_id = $3 AND message_id = $4 AND sender_id = $5
-		RETURNING channel_id, sequence, message_id, sender_id, client_message_id, body, parent_id, reply_count, poll_id, created_at, edited_at, reaction_counts, latest_reactions, pinned_at, pinned_by
+		RETURNING `+messageColumns+`
 	`, newBody, now, channelID, messageID, editorID).Scan(
 		&m.ChannelID, &m.Sequence, &m.MessageID, &m.SenderID, &m.ClientMessageID, &m.Body, &m.ParentID, &m.ReplyCount, &m.PollID, &m.CreatedAt, &m.EditedAt, &countsRaw, &latestRaw, &m.PinnedAt, &m.PinnedBy,
+		&m.QuotedMessageID, &attachmentsRaw, &linkPreviewRaw, &locationRaw, &m.Status,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -327,6 +432,9 @@ func (r *Repo) Edit(ctx context.Context, pool *pgxpool.Pool, channelID, messageI
 		return Message{}, fmt.Errorf("messages: update: %w", err)
 	}
 	if err := unmarshalReactionState(&m, countsRaw, latestRaw); err != nil {
+		return Message{}, err
+	}
+	if err := unmarshalMessageExtras(&m, attachmentsRaw, linkPreviewRaw, locationRaw); err != nil {
 		return Message{}, err
 	}
 
@@ -353,23 +461,187 @@ func (r *Repo) Edit(ctx context.Context, pool *pgxpool.Pool, channelID, messageI
 	return m, nil
 }
 
+// Search returns up to limit messages in channelID whose body matches query
+// (case-insensitive substring), newest first — the "search" capability.
+// Deliberately simple: a single ILIKE '%query%' against messages.body, no
+// full-text index, ranking, or tokenization. That's an intentional scope
+// choice (see migrations/shard/0011's neighboring capabilities for the same
+// "honest, minimal implementation" standard) rather than an oversight — a
+// production deployment expecting heavy search volume would want a real
+// text index (Postgres tsvector, or an external search service), but nothing
+// in this codebase's message volume assumptions demands that yet, and
+// ILIKE is enough to make the capability genuinely usable. No cursor
+// pagination the way ListBefore has, matching ListPinned's precedent: a
+// bounded limit is enough for a feature that isn't the primary read path.
+func (r *Repo) Search(ctx context.Context, pool *pgxpool.Pool, channelID uuid.UUID, query string, limit int) ([]Message, error) {
+	rows, err := pool.Query(ctx, `
+		SELECT `+messageColumns+`
+		FROM messages
+		WHERE channel_id = $1 AND body ILIKE '%' || $2 || '%'
+		ORDER BY sequence DESC
+		LIMIT $3
+	`, channelID, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("messages: search: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Message
+	for rows.Next() {
+		m, err := scanMessageRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("messages: scan search result: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ListPending returns a channel's currently-pending messages, oldest first —
+// the moderation queue for the "pending_messages" capability
+// (cmd/api/handlers_moderation.go). Backed by idx_messages_channel_pending
+// (migrations/shard/0011_channel_capabilities.sql), never a scan of the
+// full message log.
+func (r *Repo) ListPending(ctx context.Context, pool *pgxpool.Pool, channelID uuid.UUID, limit int) ([]Message, error) {
+	rows, err := pool.Query(ctx, `
+		SELECT `+messageColumns+`
+		FROM messages
+		WHERE channel_id = $1 AND status = 'pending'
+		ORDER BY sequence ASC
+		LIMIT $2
+	`, channelID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("messages: list pending: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Message
+	for rows.Next() {
+		m, err := scanMessageRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("messages: scan pending: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// Approve flips a pending message to sent and, only now, emits the
+// message.created event every other member's client has been waiting on —
+// see Send's doc comment on why that event was withheld at creation time.
+// ok=false (not an error) means there was nothing to approve: either the
+// message doesn't exist, or it's not currently pending (already approved,
+// or never was). ParentReplyCount is deliberately left nil on this
+// delayed event, unlike Send's — the parent's reply_count may have moved
+// since this message was created (other replies could have landed in the
+// meantime), and Approve has no fresh read of it to report; a client that
+// needs the parent's current count re-fetches it, same as it would for any
+// other out-of-band change.
+func (r *Repo) Approve(ctx context.Context, pool *pgxpool.Pool, channelID, messageID uuid.UUID) (msg Message, ok bool, err error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return Message{}, false, fmt.Errorf("messages: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	m, err := scanMessageRow(tx.QueryRow(ctx, `
+		UPDATE messages SET status = 'sent'
+		WHERE channel_id = $1 AND message_id = $2 AND status = 'pending'
+		RETURNING `+messageColumns+`
+	`, channelID, messageID))
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return Message{}, false, nil
+		}
+		return Message{}, false, fmt.Errorf("messages: approve: %w", err)
+	}
+
+	payload := events.MessageCreatedPayload{
+		MessageID:       m.MessageID,
+		ChannelID:       m.ChannelID,
+		SenderID:        m.SenderID,
+		ClientMessageID: m.ClientMessageID,
+		Sequence:        m.Sequence,
+		Body:            m.Body,
+		ParentID:        m.ParentID,
+		PollID:          m.PollID,
+		CreatedAt:       m.CreatedAt,
+	}
+	if err := events.InsertOutbox(ctx, tx, events.TopicMessageCreated, channelID, payload); err != nil {
+		return Message{}, false, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Message{}, false, fmt.Errorf("messages: commit: %w", err)
+	}
+	return m, true, nil
+}
+
+// Reject permanently deletes a pending message — since it was never
+// delivered to anyone but its own sender, there's nothing to emit and no
+// trace left for other members, unlike deleting an already-sent message
+// (which this codebase has no endpoint for at all). removed=false is a 404
+// signal: either it doesn't exist, or it's no longer pending (e.g. already
+// approved). Known, accepted gap: if the rejected message was itself a
+// reply, its parent's denormalized reply_count (bumped at Send time, see
+// Send's doc comment) is not decremented here — a rejected reply is rare
+// enough, and the count drift small enough, that this hasn't been worth
+// the extra transactional complexity to correct.
+func (r *Repo) Reject(ctx context.Context, pool *pgxpool.Pool, channelID, messageID uuid.UUID) (removed bool, err error) {
+	tag, err := pool.Exec(ctx, `
+		DELETE FROM messages WHERE channel_id = $1 AND message_id = $2 AND status = 'pending'
+	`, channelID, messageID)
+	if err != nil {
+		return false, fmt.Errorf("messages: reject: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SetLinkPreview stores the "url_enrichment" capability's best-effort
+// fetched metadata for a message — called once, asynchronously, shortly
+// after Send by cmd/api's enrichLinkPreview goroutine (never inside Send's
+// own transaction: the fetch itself can take seconds, far too long to hold
+// a row lock or delay the send response for). No realtime event is emitted
+// for this update — deliberately out of scope for now, see
+// migrations/shard/0011's doc comment; a connected client picks it up the
+// next time it re-lists/re-fetches the message. A message that no longer
+// exists by the time the fetch completes (e.g. already deleted by
+// retention) is a silent no-op, not an error — nothing meaningful to do at
+// that point.
+func (r *Repo) SetLinkPreview(ctx context.Context, pool *pgxpool.Pool, channelID, messageID uuid.UUID, preview *LinkPreview) error {
+	data, err := json.Marshal(preview)
+	if err != nil {
+		return fmt.Errorf("messages: marshal link_preview: %w", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE messages SET link_preview = $1 WHERE channel_id = $2 AND message_id = $3
+	`, data, channelID, messageID); err != nil {
+		return fmt.Errorf("messages: set link_preview: %w", err)
+	}
+	return nil
+}
+
 // messageColumns is the full column list every "read back a whole message
 // row" query in this file selects, in Scan order — factored out once here
 // (Pin/Unpin/ListPinned/getByMessageID all need it) rather than duplicated
 // a fourth and fifth time the way Edit/getByClientMessageID/ListBefore's
 // pre-existing copies already are.
-const messageColumns = "channel_id, sequence, message_id, sender_id, client_message_id, body, parent_id, reply_count, poll_id, created_at, edited_at, reaction_counts, latest_reactions, pinned_at, pinned_by"
+const messageColumns = "channel_id, sequence, message_id, sender_id, client_message_id, body, parent_id, reply_count, poll_id, created_at, edited_at, reaction_counts, latest_reactions, pinned_at, pinned_by, quoted_message_id, attachments, link_preview, location, status"
 
 func scanMessageRow(row pgx.Row) (Message, error) {
 	var m Message
-	var countsRaw, latestRaw []byte
+	var countsRaw, latestRaw, attachmentsRaw, linkPreviewRaw, locationRaw []byte
 	err := row.Scan(
 		&m.ChannelID, &m.Sequence, &m.MessageID, &m.SenderID, &m.ClientMessageID, &m.Body, &m.ParentID, &m.ReplyCount, &m.PollID, &m.CreatedAt, &m.EditedAt, &countsRaw, &latestRaw, &m.PinnedAt, &m.PinnedBy,
+		&m.QuotedMessageID, &attachmentsRaw, &linkPreviewRaw, &locationRaw, &m.Status,
 	)
 	if err != nil {
 		return Message{}, err
 	}
 	if err := unmarshalReactionState(&m, countsRaw, latestRaw); err != nil {
+		return Message{}, err
+	}
+	if err := unmarshalMessageExtras(&m, attachmentsRaw, linkPreviewRaw, locationRaw); err != nil {
 		return Message{}, err
 	}
 	return m, nil
@@ -535,12 +807,13 @@ func (r *Repo) ListPinned(ctx context.Context, pool *pgxpool.Pool, channelID uui
 
 func (r *Repo) getByClientMessageID(ctx context.Context, pool *pgxpool.Pool, channelID, clientMessageID uuid.UUID) (Message, bool, error) {
 	var m Message
-	var countsRaw, latestRaw []byte
+	var countsRaw, latestRaw, attachmentsRaw, linkPreviewRaw, locationRaw []byte
 	err := pool.QueryRow(ctx, `
-		SELECT channel_id, sequence, message_id, sender_id, client_message_id, body, parent_id, reply_count, poll_id, created_at, edited_at, reaction_counts, latest_reactions, pinned_at, pinned_by
+		SELECT `+messageColumns+`
 		FROM messages WHERE channel_id = $1 AND client_message_id = $2
 	`, channelID, clientMessageID).Scan(
 		&m.ChannelID, &m.Sequence, &m.MessageID, &m.SenderID, &m.ClientMessageID, &m.Body, &m.ParentID, &m.ReplyCount, &m.PollID, &m.CreatedAt, &m.EditedAt, &countsRaw, &latestRaw, &m.PinnedAt, &m.PinnedBy,
+		&m.QuotedMessageID, &attachmentsRaw, &linkPreviewRaw, &locationRaw, &m.Status,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -549,6 +822,9 @@ func (r *Repo) getByClientMessageID(ctx context.Context, pool *pgxpool.Pool, cha
 		return Message{}, false, fmt.Errorf("messages: lookup by client_message_id: %w", err)
 	}
 	if err := unmarshalReactionState(&m, countsRaw, latestRaw); err != nil {
+		return Message{}, false, err
+	}
+	if err := unmarshalMessageExtras(&m, attachmentsRaw, linkPreviewRaw, locationRaw); err != nil {
 		return Message{}, false, err
 	}
 	return m, true, nil
@@ -573,7 +849,7 @@ func (r *Repo) ListBefore(ctx context.Context, pool *pgxpool.Pool, channelID uui
 		excludeSenders = []uuid.UUID{}
 	}
 	rows, err := pool.Query(ctx, `
-		SELECT channel_id, sequence, message_id, sender_id, client_message_id, body, parent_id, reply_count, poll_id, created_at, edited_at, reaction_counts, latest_reactions, pinned_at, pinned_by
+		SELECT `+messageColumns+`
 		FROM messages
 		WHERE channel_id = $1 AND ($2 = 0 OR sequence < $2) AND sender_id != ALL($4::uuid[])
 		ORDER BY sequence DESC
@@ -587,11 +863,15 @@ func (r *Repo) ListBefore(ctx context.Context, pool *pgxpool.Pool, channelID uui
 	var out []Message
 	for rows.Next() {
 		var m Message
-		var countsRaw, latestRaw []byte
-		if err := rows.Scan(&m.ChannelID, &m.Sequence, &m.MessageID, &m.SenderID, &m.ClientMessageID, &m.Body, &m.ParentID, &m.ReplyCount, &m.PollID, &m.CreatedAt, &m.EditedAt, &countsRaw, &latestRaw, &m.PinnedAt, &m.PinnedBy); err != nil {
+		var countsRaw, latestRaw, attachmentsRaw, linkPreviewRaw, locationRaw []byte
+		if err := rows.Scan(&m.ChannelID, &m.Sequence, &m.MessageID, &m.SenderID, &m.ClientMessageID, &m.Body, &m.ParentID, &m.ReplyCount, &m.PollID, &m.CreatedAt, &m.EditedAt, &countsRaw, &latestRaw, &m.PinnedAt, &m.PinnedBy,
+			&m.QuotedMessageID, &attachmentsRaw, &linkPreviewRaw, &locationRaw, &m.Status); err != nil {
 			return nil, fmt.Errorf("messages: scan: %w", err)
 		}
 		if err := unmarshalReactionState(&m, countsRaw, latestRaw); err != nil {
+			return nil, err
+		}
+		if err := unmarshalMessageExtras(&m, attachmentsRaw, linkPreviewRaw, locationRaw); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -708,6 +988,32 @@ func unmarshalReactionState(m *Message, countsRaw, latestRaw []byte) error {
 	}
 	if err := json.Unmarshal(latestRaw, &m.LatestReactions); err != nil {
 		return fmt.Errorf("messages: unmarshal latest_reactions: %w", err)
+	}
+	return nil
+}
+
+// unmarshalMessageExtras fills in the four columns added by
+// migrations/shard/0011_channel_capabilities.sql. attachments is NOT NULL
+// (always valid JSON, defaulting to '[]'); link_preview and location are
+// nullable, so a zero-length scan ([]byte(nil), meaning SQL NULL) leaves
+// the corresponding pointer field nil instead of being unmarshaled.
+func unmarshalMessageExtras(m *Message, attachmentsRaw, linkPreviewRaw, locationRaw []byte) error {
+	if err := json.Unmarshal(attachmentsRaw, &m.Attachments); err != nil {
+		return fmt.Errorf("messages: unmarshal attachments: %w", err)
+	}
+	if len(linkPreviewRaw) > 0 {
+		var lp LinkPreview
+		if err := json.Unmarshal(linkPreviewRaw, &lp); err != nil {
+			return fmt.Errorf("messages: unmarshal link_preview: %w", err)
+		}
+		m.LinkPreview = &lp
+	}
+	if len(locationRaw) > 0 {
+		var loc Location
+		if err := json.Unmarshal(locationRaw, &loc); err != nil {
+			return fmt.Errorf("messages: unmarshal location: %w", err)
+		}
+		m.Location = &loc
 	}
 	return nil
 }

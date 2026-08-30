@@ -39,6 +39,16 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("DELETE /channels/{id}/polls/{poll_id}/votes", a.instrument("clear_poll_votes", a.requireAuth(a.handleClearPollVotes)))
 	mux.HandleFunc("POST /channels/{id}/read", a.instrument("mark_read", a.requireAuth(a.handleMarkRead)))
 	mux.HandleFunc("GET /channels/{id}/read-state", a.instrument("list_read_state", a.requireAuth(a.handleListReadState)))
+	mux.HandleFunc("GET /channels/{id}/messages/search", a.instrument("search_messages", a.requireAuth(a.handleSearchMessages)))
+	mux.HandleFunc("POST /channels/{id}/events", a.instrument("send_custom_event", a.requireAuth(a.handleSendCustomEvent)))
+	mux.HandleFunc("POST /channels/{id}/mutes", a.instrument("mute_user", a.requireAuth(a.handleMuteUser)))
+	mux.HandleFunc("DELETE /channels/{id}/mutes/{user_id}", a.instrument("unmute_user", a.requireAuth(a.handleUnmuteUser)))
+	mux.HandleFunc("GET /channels/{id}/mutes", a.instrument("list_mutes", a.requireAuth(a.handleListMutes)))
+	mux.HandleFunc("POST /channels/{id}/messages/{message_id}/reminders", a.instrument("create_message_reminder", a.requireAuth(a.handleCreateMessageReminder)))
+	mux.HandleFunc("DELETE /channels/{id}/messages/{message_id}/reminders", a.instrument("cancel_message_reminder", a.requireAuth(a.handleCancelMessageReminder)))
+	mux.HandleFunc("GET /channels/{id}/messages/pending", a.instrument("list_pending_messages", a.requireAuth(a.handleListPendingMessages)))
+	mux.HandleFunc("POST /channels/{id}/messages/{message_id}/approve", a.instrument("approve_message", a.requireAuth(a.handleApproveMessage)))
+	mux.HandleFunc("POST /channels/{id}/messages/{message_id}/reject", a.instrument("reject_message", a.requireAuth(a.handleRejectMessage)))
 
 	mux.HandleFunc("GET /users/me/channels", a.instrument("list_my_channels", a.requireAuth(a.handleListMyChannels)))
 

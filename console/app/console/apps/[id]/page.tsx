@@ -44,10 +44,12 @@ import {
   removeChannelMember,
   revealCredential,
   revokeCredential,
+  updateApp,
   ApiError,
 } from "@/lib/api";
 import type {
   AppSummary,
+  ChannelCapabilities,
   ChannelMember,
   Credential,
   DashboardBlock,
@@ -55,6 +57,7 @@ import type {
   DashboardPoll,
   EndUser,
   MessagesUsage,
+  UpdateAppRequest,
 } from "@/lib/types";
 import { ConsoleShell, useSession } from "@/components/shell";
 import { useToast } from "@/components/toast";
@@ -73,6 +76,7 @@ import {
   Skeleton,
   Sparkline,
   StatusDot,
+  Switch,
 } from "@/components/ui";
 
 export default function AppDetailPage() {
@@ -89,6 +93,7 @@ const TABS = [
   { id: "users", label: "End-users" },
   { id: "channels", label: "Channels" },
   { id: "blocks", label: "Blocks" },
+  { id: "settings", label: "Settings" },
 ] as const;
 
 type TabID = (typeof TABS)[number]["id"];
@@ -146,6 +151,7 @@ function AppDetailView() {
       {tab === "users" && <EndUsersTab appId={appId} />}
       {tab === "channels" && <ChannelsTab appId={appId} />}
       {tab === "blocks" && <BlocksTab appId={appId} />}
+      {tab === "settings" && <SettingsTab appId={appId} app={app} onUpdated={setApp} />}
     </div>
   );
 }
@@ -1475,6 +1481,271 @@ function BlockedUser({ userId, name }: { userId: string; name: string | undefine
     <div className="flex min-w-0 flex-1 items-center gap-2.5">
       <Avatar name={label} size="sm" />
       <span className="truncate text-[15px] text-text">{label}</span>
+    </div>
+  );
+}
+
+// ---- Settings ----
+
+// CAPABILITY_GROUPS drives the "Channel Capabilities" panel — every key
+// here must match internal/apps.ChannelCapabilities' json tags exactly
+// (lib/types.ts's ChannelCapabilities interface mirrors that struct field
+// for field). Grouped for readability only; the backend has no concept of
+// these groupings, just one flat set of 19 booleans.
+const CAPABILITY_GROUPS: { title: string; items: { key: keyof ChannelCapabilities; label: string; hint?: string }[] }[] = [
+  {
+    title: "Realtime events",
+    items: [
+      { key: "typing_events", label: "Typing Events", hint: "Broadcast typing.start / typing.stop over the socket." },
+      { key: "read_events", label: "Read Events", hint: "Let clients mark a channel read." },
+      { key: "connection_events", label: "Connection Events", hint: "Broadcast when a member connects or disconnects." },
+      { key: "custom_events", label: "Custom Events", hint: "Let clients broadcast an arbitrary event of their own." },
+      { key: "delivery_events", label: "Delivery Events", hint: "Stored — not yet wired into realtime delivery." },
+    ],
+  },
+  {
+    title: "Messaging",
+    items: [
+      { key: "reactions", label: "Reactions" },
+      { key: "threads_and_replies", label: "Threads & Replies" },
+      { key: "quotes", label: "Quotes" },
+      { key: "uploads", label: "Uploads", hint: "Client-supplied attachment URLs — this platform doesn't host files itself." },
+      { key: "url_enrichment", label: "URL Enrichment", hint: "Best-effort link preview fetched after send." },
+      { key: "location_sharing", label: "Location Sharing" },
+      { key: "polls", label: "Polls" },
+      { key: "message_count", label: "Message Count", hint: "Stored — reply counts are always tracked regardless of this toggle." },
+      { key: "strict_last_message_time", label: "Strict Last Message Time", hint: "Stored — inert until this platform has a system-message concept." },
+    ],
+  },
+  {
+    title: "Moderation & reminders",
+    items: [
+      { key: "mutes", label: "Mutes", hint: "Per-channel and one-directional — not enforced in delivery filtering." },
+      { key: "pending_messages", label: "Pending Messages", hint: "New messages need approval before other members see them." },
+      { key: "message_reminders", label: "Message Reminders" },
+      { key: "unread_reminders", label: "Unread Reminders" },
+      { key: "search", label: "Search", hint: "Simple substring search over message bodies." },
+    ],
+  },
+];
+
+// KNOWN_COMMANDS seeds the Commands panel's chip list — apps.App's own
+// default (migrations/control/0012_channel_capabilities.sql). An app can
+// still enable a command outside this set via the free-text field below;
+// SettingsTab always renders the union of this list and whatever's
+// currently enabled, so a custom command an owner already added stays
+// visible even though it isn't one of these five.
+const KNOWN_COMMANDS = ["giphy", "ban", "unban", "mute", "unmute"];
+
+function SettingsTab({
+  appId,
+  app,
+  onUpdated,
+}: {
+  appId: number;
+  app: AppSummary | null;
+  onUpdated: (app: AppSummary) => void;
+}) {
+  const { session } = useSession();
+  const toast = useToast();
+  // Which single field is currently mid-PATCH — disables just that control
+  // (not the whole form) and doubles as the request key so two toggles
+  // flipped in quick succession don't race each other's optimistic state.
+  const [saving, setSaving] = useState<string | null>(null);
+  const [maxLenDraft, setMaxLenDraft] = useState("");
+  const [maxDepthDraft, setMaxDepthDraft] = useState("");
+  const [newCommand, setNewCommand] = useState("");
+
+  useEffect(() => {
+    if (!app) return;
+    setMaxLenDraft(String(app.max_message_length));
+    setMaxDepthDraft(String(app.max_thread_depth));
+  }, [app?.app_id, app?.max_message_length, app?.max_thread_depth]);
+
+  async function patch(fieldKey: string, body: UpdateAppRequest) {
+    setSaving(fieldKey);
+    try {
+      const updated = await updateApp(session.token, appId, body);
+      onUpdated(updated);
+    } catch (err) {
+      toast("error", err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  function toggleCapability(key: keyof ChannelCapabilities, next: boolean) {
+    patch(key, { channel_capabilities: { [key]: next } });
+  }
+
+  function toggleCommand(cmd: string) {
+    if (!app) return;
+    const next = app.enabled_commands.includes(cmd)
+      ? app.enabled_commands.filter((c) => c !== cmd)
+      : [...app.enabled_commands, cmd];
+    patch("enabled_commands", { enabled_commands: next });
+  }
+
+  function addCustomCommand() {
+    const cmd = newCommand.trim().toLowerCase();
+    if (!cmd || !app || app.enabled_commands.includes(cmd)) return;
+    patch("enabled_commands", { enabled_commands: [...app.enabled_commands, cmd] });
+    setNewCommand("");
+  }
+
+  if (!app) {
+    return (
+      <div className="space-y-5">
+        <Skeleton className="h-56 w-full rounded-2xl" />
+        <Skeleton className="h-40 w-full rounded-2xl" />
+        <Skeleton className="h-32 w-full rounded-2xl" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {CAPABILITY_GROUPS.map((group) => (
+        <Panel key={group.title}>
+          <h3 className="mb-1 text-[15px] font-semibold text-text">{group.title}</h3>
+          <p className="mb-4 text-sm text-text-faint">
+            Every toggle here is read live from the next request onward — no restart or redeploy needed.
+          </p>
+          <div className="divide-y divide-border-soft">
+            {group.items.map((item) => (
+              <div key={item.key} className="flex items-center justify-between gap-4 py-3.5 first:pt-0 last:pb-0">
+                <div className="min-w-0 pr-4">
+                  <div className="text-[15px] text-text">{item.label}</div>
+                  {item.hint && <div className="mt-0.5 text-xs text-text-faint">{item.hint}</div>}
+                </div>
+                <Switch
+                  checked={app.channel_capabilities[item.key]}
+                  disabled={saving === item.key}
+                  onChange={(next) => toggleCapability(item.key, next)}
+                  label={item.label}
+                />
+              </div>
+            ))}
+          </div>
+        </Panel>
+      ))}
+
+      <Panel>
+        <h3 className="mb-1 text-[15px] font-semibold text-text">Message editing & threads</h3>
+        <p className="mb-4 text-sm text-text-faint">Applies to every send/edit for this app.</p>
+        <div className="divide-y divide-border-soft">
+          <div className="flex items-center justify-between gap-4 py-3.5 first:pt-0">
+            <div>
+              <div className="text-[15px] text-text">Message Editing</div>
+              <div className="mt-0.5 text-xs text-text-faint">Let end-users edit their own messages.</div>
+            </div>
+            <Switch
+              checked={app.message_edit_enabled}
+              disabled={saving === "message_edit_enabled"}
+              onChange={(next) => patch("message_edit_enabled", { message_edit_enabled: next })}
+              label="Message Editing"
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 py-3.5">
+            <div>
+              <div className="text-[15px] text-text">Maximum Message Length</div>
+              <div className="mt-0.5 text-xs text-text-faint">Characters allowed per message body.</div>
+            </div>
+            <Input
+              type="number"
+              min={1}
+              value={maxLenDraft}
+              onChange={(e) => setMaxLenDraft(e.target.value)}
+              onBlur={() => {
+                const n = Number(maxLenDraft);
+                if (Number.isFinite(n) && n > 0 && n !== app.max_message_length) {
+                  patch("max_message_length", { max_message_length: n });
+                } else {
+                  setMaxLenDraft(String(app.max_message_length));
+                }
+              }}
+              className="w-28 text-right"
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 py-3.5 last:pb-0">
+            <div>
+              <div className="text-[15px] text-text">Maximum Thread Depth</div>
+              <div className="mt-0.5 text-xs text-text-faint">0 means unlimited nesting.</div>
+            </div>
+            <Input
+              type="number"
+              min={0}
+              value={maxDepthDraft}
+              onChange={(e) => setMaxDepthDraft(e.target.value)}
+              onBlur={() => {
+                const n = Number(maxDepthDraft);
+                if (Number.isFinite(n) && n >= 0 && n !== app.max_thread_depth) {
+                  patch("max_thread_depth", { max_thread_depth: n });
+                } else {
+                  setMaxDepthDraft(String(app.max_thread_depth));
+                }
+              }}
+              className="w-28 text-right"
+            />
+          </div>
+        </div>
+      </Panel>
+
+      <Panel>
+        <h3 className="mb-1 text-[15px] font-semibold text-text">Dynamic Partitioning</h3>
+        <p className="mb-4 text-sm text-text-faint">
+          Stored for parity with the platform's routing docs — every channel is already sharded regardless of this
+          toggle, so flipping it doesn't change delivery behavior today.
+        </p>
+        <div className="flex items-center justify-between gap-4">
+          <div className="text-[15px] text-text">Dynamic Partitioning</div>
+          <Switch
+            checked={app.dynamic_partitioning}
+            disabled={saving === "dynamic_partitioning"}
+            onChange={(next) => patch("dynamic_partitioning", { dynamic_partitioning: next })}
+            label="Dynamic Partitioning"
+          />
+        </div>
+      </Panel>
+
+      <Panel>
+        <h3 className="mb-1 text-[15px] font-semibold text-text">Commands</h3>
+        <p className="mb-4 text-sm text-text-faint">Slash-commands surfaced by the composer.</p>
+        <div className="flex flex-wrap gap-2">
+          {Array.from(new Set([...KNOWN_COMMANDS, ...app.enabled_commands])).map((cmd) => {
+            const active = app.enabled_commands.includes(cmd);
+            return (
+              <button
+                key={cmd}
+                onClick={() => toggleCommand(cmd)}
+                disabled={saving === "enabled_commands"}
+                className={`rounded-full border px-3.5 py-1.5 text-[13px] transition-colors duration-150 disabled:opacity-40 ${
+                  active ? "border-accent/30 bg-accent-soft text-accent" : "border-border text-text-muted hover:text-text"
+                }`}
+              >
+                /{cmd}
+              </button>
+            );
+          })}
+        </div>
+        <div className="mt-4 flex items-center gap-2">
+          <Input
+            placeholder="custom-command"
+            value={newCommand}
+            onChange={(e) => setNewCommand(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                addCustomCommand();
+              }
+            }}
+            className="max-w-[220px]"
+          />
+          <Button variant="secondary" onClick={addCustomCommand} icon={<Plus className="h-4 w-4" />}>
+            Add
+          </Button>
+        </div>
+      </Panel>
     </div>
   );
 }
