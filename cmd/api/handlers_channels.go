@@ -6,11 +6,13 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/darkoatanasovski/chat/internal/channels"
 	"github.com/darkoatanasovski/chat/internal/quota"
+	"github.com/darkoatanasovski/chat/internal/users"
 )
 
 type createChannelRequest struct {
@@ -192,9 +194,30 @@ func (a *App) handleAddMember(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// statusResponse is the "chat users have online status" shape shared by
+// every user-listing response that carries presence (channel members, the
+// dashboard's end-user list): a timestamp plus a boolean derived from it,
+// never a separately tracked "connected" flag — see internal/users.IsOnline.
+type statusResponse struct {
+	// LastActiveAt is omitted entirely for a user with no tracked activity
+	// yet (never connected, never sent a message/reaction/read-state
+	// update) rather than serialized as null.
+	LastActiveAt string `json:"last_active_at,omitempty"`
+	IsOnline     bool   `json:"is_online"`
+}
+
+func buildStatus(lastActiveAt *time.Time) statusResponse {
+	out := statusResponse{IsOnline: users.IsOnline(lastActiveAt)}
+	if lastActiveAt != nil {
+		out.LastActiveAt = lastActiveAt.Format(rfc3339Milli)
+	}
+	return out
+}
+
 type memberResponse struct {
-	UserID      string `json:"user_id"`
-	DisplayName string `json:"display_name"`
+	UserID      string         `json:"user_id"`
+	DisplayName string         `json:"display_name"`
+	Status      statusResponse `json:"status"`
 }
 
 // handleListMembers backs GET /channels/{id}/members — the UI's source of
@@ -230,7 +253,7 @@ func (a *App) handleListMembers(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]memberResponse, len(members))
 	for i, m := range members {
-		out[i] = memberResponse{UserID: m.UserID.String(), DisplayName: m.DisplayName}
+		out[i] = memberResponse{UserID: m.UserID.String(), DisplayName: m.DisplayName, Status: buildStatus(m.LastActiveAt)}
 	}
 	writeJSON(w, http.StatusOK, out)
 }

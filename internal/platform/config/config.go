@@ -4,6 +4,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"strconv"
@@ -33,6 +34,21 @@ type Config struct {
 
 	AuthSecret string
 
+	// AppSecretEncryptionKey decrypts/encrypts app_credentials.secret_encrypted
+	// (internal/platform/secretbox) so a dashboard user can reveal a
+	// credential's secret again after the one-time creation response is
+	// gone — see internal/apps.CredentialRepo.Reveal. Loaded from
+	// APP_SECRET_ENCRYPTION_KEY (base64, must decode to exactly
+	// secretbox.KeySize bytes), a separate key from AuthSecret since the
+	// two protect different things (request signing vs. secrets at rest).
+	//
+	// api only: like DodoAPIKey below, empty is a valid value here — Load
+	// doesn't require it, because cmd/gateway and cmd/worker also call
+	// Load and never touch app credentials. cmd/api/main.go is what
+	// requires and validates it (fails fast at startup, not lazily on the
+	// first credential request) since it's the only caller that needs it.
+	AppSecretEncryptionKey []byte
+
 	ShardsConfigPath string
 	TiersConfigPath  string
 
@@ -53,6 +69,21 @@ type Config struct {
 	// worker: which physical shard this instance publishes the outbox for.
 	ShardID  string
 	ShardDSN string
+
+	// api: Dodo Payments billing (self-serve plan upgrades from the
+	// console) — see cmd/api/handlers_billing.go. All empty/false is a
+	// valid "billing not configured" state; handlers report that as an
+	// error rather than the service failing to start, since most
+	// dev/test environments have no need for it.
+	DodoAPIKey     string
+	DodoWebhookKey string
+	DodoLiveMode   bool
+	// DodoProductIDs maps an upgradable tier (PRO, BUSINESS) to the Dodo
+	// product id a checkout for that tier should sell.
+	DodoProductIDs map[string]string
+	// ConsoleBaseURL builds the return_url Dodo redirects the customer to
+	// once checkout completes.
+	ConsoleBaseURL string
 }
 
 func Load() (Config, error) {
@@ -71,6 +102,15 @@ func Load() (Config, error) {
 		KafkaConsumerGroup: os.Getenv("KAFKA_CONSUMER_GROUP"),
 		ShardID:            os.Getenv("SHARD_ID"),
 		ShardDSN:           os.Getenv("SHARD_DSN"),
+		DodoAPIKey:         os.Getenv("DODO_PAYMENTS_API_KEY"),
+		DodoWebhookKey:     os.Getenv("DODO_PAYMENTS_WEBHOOK_KEY"),
+		DodoLiveMode:       os.Getenv("DODO_PAYMENTS_LIVE_MODE") == "true",
+		ConsoleBaseURL:     getenvDefault("CONSOLE_BASE_URL", "http://localhost:3001"),
+	}
+
+	c.DodoProductIDs = map[string]string{
+		"PRO":      os.Getenv("DODO_PRODUCT_ID_PRO"),
+		"BUSINESS": os.Getenv("DODO_PRODUCT_ID_BUSINESS"),
 	}
 
 	if brokers := os.Getenv("KAFKA_BROKERS"); brokers != "" {
@@ -97,6 +137,14 @@ func Load() (Config, error) {
 
 	if c.AuthSecret == "" {
 		return c, fmt.Errorf("config: AUTH_SECRET is required")
+	}
+
+	if keyB64 := os.Getenv("APP_SECRET_ENCRYPTION_KEY"); keyB64 != "" {
+		key, err := base64.StdEncoding.DecodeString(keyB64)
+		if err != nil {
+			return c, fmt.Errorf("config: APP_SECRET_ENCRYPTION_KEY must be base64: %w", err)
+		}
+		c.AppSecretEncryptionKey = key
 	}
 
 	return c, nil

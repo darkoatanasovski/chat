@@ -132,6 +132,79 @@ func TestHandleAppCredentials_RejectsOtherOrgsApp(t *testing.T) {
 	}
 }
 
+// TestHandleAppCredentials_Reveal proves a credential's secret can be
+// recovered after the one-time creation response is gone — the whole
+// point of storing it encrypted (CredentialRepo.Reveal), not just hashed —
+// and that this still works after the credential is revoked (revoking
+// stops the secret from authenticating requests, not from being visible
+// to the org that owns it), but is scoped to the owning org the same way
+// every other credentials route is.
+func TestHandleAppCredentials_Reveal(t *testing.T) {
+	app := testApp(t)
+	orgID, orgToken := createTestOrg(t, app, "PRO")
+	appID, _, _ := createTestApp(t, app, orgID, orgToken)
+
+	var issued credentialResponse
+	rec := do(t, app, authed(jsonRequest("POST", fmt.Sprintf("/apps/%d/credentials", appID), nil), orgToken), &issued)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create credential: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var revealed revealCredentialResponse
+	rec = do(t, app, authed(jsonRequest("GET", fmt.Sprintf("/apps/%d/credentials/%s/reveal", appID, issued.CredentialID), nil), orgToken), &revealed)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reveal credential: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if revealed.Secret != issued.Secret {
+		t.Fatalf("revealed secret %q does not match the secret shown at creation %q", revealed.Secret, issued.Secret)
+	}
+
+	// Revoke it, then confirm the secret is still revealable — revocation
+	// is about stopping future use, not about erasing the record of what
+	// the value was.
+	rec = do(t, app, authed(jsonRequest("DELETE", fmt.Sprintf("/apps/%d/credentials/%s", appID, issued.CredentialID), nil), orgToken), nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("revoke credential: status = %d, want 204, body = %s", rec.Code, rec.Body.String())
+	}
+	revealed = revealCredentialResponse{}
+	rec = do(t, app, authed(jsonRequest("GET", fmt.Sprintf("/apps/%d/credentials/%s/reveal", appID, issued.CredentialID), nil), orgToken), &revealed)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reveal revoked credential: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if revealed.Secret != issued.Secret {
+		t.Fatalf("revealed secret after revoke %q does not match original %q", revealed.Secret, issued.Secret)
+	}
+
+	// A nonexistent credential_id (well-formed UUID, but no such row) is a
+	// 404, not a 500 or an empty-secret 200.
+	rec = do(t, app, authed(jsonRequest("GET", fmt.Sprintf("/apps/%d/credentials/%s/reveal", appID, uuid.NewString()), nil), orgToken), nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("reveal nonexistent credential: status = %d, want 404, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleAppCredentials_RevealRejectsOtherOrgsApp proves the same
+// ownership scoping TestHandleAppCredentials_RejectsOtherOrgsApp already
+// proves for create applies to reveal too — an org can't recover a
+// credential's secret just by guessing another org's app_id/credential_id.
+func TestHandleAppCredentials_RevealRejectsOtherOrgsApp(t *testing.T) {
+	app := testApp(t)
+	victimOrgID, victimOrgToken := createTestOrg(t, app, "FREE")
+	victimAppID, _, _ := createTestApp(t, app, victimOrgID, victimOrgToken)
+	_, attackerToken := createTestOrg(t, app, "FREE")
+
+	var issued credentialResponse
+	rec := do(t, app, authed(jsonRequest("POST", fmt.Sprintf("/apps/%d/credentials", victimAppID), nil), victimOrgToken), &issued)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create credential: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = do(t, app, authed(jsonRequest("GET", fmt.Sprintf("/apps/%d/credentials/%s/reveal", victimAppID, issued.CredentialID), nil), attackerToken), nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 // TestCrossAppIsolation proves an end-user created under one App can't
 // reach a channel that belongs to a different App, even with a guessed or
 // leaked channel_id — the isolation guarantee the whole org->app model
@@ -141,7 +214,7 @@ func TestCrossAppIsolation(t *testing.T) {
 
 	_, keyA, secretA := createOrgAndApp(t, app, "FREE")
 	var ownerResp createUserResponse
-	rec := do(t, app, basicAuthed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "app-a-owner", Region: "eu"}), keyA, secretA), &ownerResp)
+	rec := do(t, app, authed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "app-a-owner", Region: "eu"}), appAccessToken(t, app, keyA, secretA)), &ownerResp)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create app-a owner: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -149,7 +222,7 @@ func TestCrossAppIsolation(t *testing.T) {
 
 	_, keyB, secretB := createOrgAndApp(t, app, "FREE")
 	var outsiderResp createUserResponse
-	rec = do(t, app, basicAuthed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "app-b-outsider", Region: "eu"}), keyB, secretB), &outsiderResp)
+	rec = do(t, app, authed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "app-b-outsider", Region: "eu"}), appAccessToken(t, app, keyB, secretB)), &outsiderResp)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create app-b outsider: status = %d, body = %s", rec.Code, rec.Body.String())
 	}

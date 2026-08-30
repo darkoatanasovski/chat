@@ -8,9 +8,33 @@
 # lower-friction than composing a message and happens more often.
 # read_updates_per_minute is lower than reactions — a client should debounce
 # "mark read" client-side (once per channel open, not once per message).
+# polls_per_minute is set well below messages_per_minute at every tier —
+# creating a poll (with its options) is a heavier, rarer action than sending
+# a message. poll_votes_per_minute mirrors reactions_per_minute exactly:
+# casting/retracting a vote is the same class of lightweight, frequent
+# action as toggling a reaction.
+# message_edits_per_minute mirrors messages_per_minute exactly — editing
+# your own message is roughly the same weight as sending one, so it gets
+# the same budget rather than a separately-tuned number.
+# message_pins_per_minute also mirrors messages_per_minute — unlike a
+# reaction or a bookmark, pinning broadcasts a state change to the whole
+# channel (message.pin_updated fans out to every member the same way a new
+# message does), so it gets the same conservative budget as composing a
+# message rather than reactions' higher one. bookmarks_per_minute mirrors
+# reactions_per_minute instead: a bookmark is purely private (never
+# broadcast to anyone else in the channel — internal/bookmarks lives in
+# the control plane precisely because it's a per-user index, not shared
+# state), so it's the same class of lightweight, frequent action as
+# toggling a reaction.
 # Typing presence has no rate limit here: it never touches this HTTP layer
 # at all (relayed directly over the WebSocket, see
 # internal/realtime.ConnectHandler.relayTyping).
+#
+# retention_days is how long a message survives before the per-shard
+# retention sweep (cmd/worker) deletes it, <= 0 meaning "keep forever" (see
+# ENTERPRISE below). It's the one setting here that isn't a rate/resource
+# cap — everything else in this file governs what a request is allowed to
+# do, this governs how long its result is kept around afterward.
 
 tiers:
   FREE:
@@ -18,29 +42,53 @@ tiers:
     max_channels: 1
     max_channel_members: 3
     messages_per_minute: 20
+    message_edits_per_minute: 20
+    message_pins_per_minute: 20
+    bookmarks_per_minute: 40
     reactions_per_minute: 40
     read_updates_per_minute: 30
+    polls_per_minute: 5
+    poll_votes_per_minute: 40
+    retention_days: 7
 
   PRO:
     max_apps: 5
     max_channels: 20
     max_channel_members: 100
     messages_per_minute: 200
+    message_edits_per_minute: 200
+    message_pins_per_minute: 200
+    bookmarks_per_minute: 400
     reactions_per_minute: 400
     read_updates_per_minute: 300
+    polls_per_minute: 50
+    poll_votes_per_minute: 400
+    retention_days: 30
 
   BUSINESS:
     max_apps: 20
     max_channels: 100
     max_channel_members: 1000
     messages_per_minute: 1000
+    message_edits_per_minute: 1000
+    message_pins_per_minute: 1000
+    bookmarks_per_minute: 2000
     reactions_per_minute: 2000
     read_updates_per_minute: 1500
+    polls_per_minute: 250
+    poll_votes_per_minute: 2000
+    retention_days: 90
 
   ENTERPRISE:
     max_apps: 1000
     max_channels: 10000
     max_channel_members: 100000
     messages_per_minute: 10000
+    message_edits_per_minute: 10000
+    message_pins_per_minute: 10000
+    bookmarks_per_minute: 20000
     reactions_per_minute: 20000
     read_updates_per_minute: 15000
+    polls_per_minute: 2500
+    poll_votes_per_minute: 20000
+    retention_days: 0

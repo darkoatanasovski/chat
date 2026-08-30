@@ -4,8 +4,14 @@ import { GeistMono } from "geist/font/mono";
 import { ToastProvider } from "@/components/toast";
 import "./globals.css";
 
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3001";
+
 export const metadata: Metadata = {
-  title: "Chat Platform Console",
+  metadataBase: new URL(SITE_URL),
+  title: {
+    default: "Chat Platform Console",
+    template: "%s · Chat Platform",
+  },
   description: "Manage your organization's apps, API keys, team, and usage",
 };
 

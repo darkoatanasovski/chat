@@ -17,13 +17,31 @@ import (
 const TopicMessageCreated = "message.created"
 
 type MessageCreatedPayload struct {
-	MessageID       uuid.UUID `json:"message_id"`
-	ChannelID       uuid.UUID `json:"channel_id"`
-	SenderID        uuid.UUID `json:"sender_id"`
-	ClientMessageID uuid.UUID `json:"client_message_id"`
-	Sequence        int64     `json:"sequence"`
-	Body            string    `json:"body"`
-	CreatedAt       time.Time `json:"created_at"`
+	MessageID       uuid.UUID  `json:"message_id"`
+	ChannelID       uuid.UUID  `json:"channel_id"`
+	SenderID        uuid.UUID  `json:"sender_id"`
+	ClientMessageID uuid.UUID  `json:"client_message_id"`
+	Sequence        int64      `json:"sequence"`
+	Body            string     `json:"body"`
+	// ParentID is nil for a top-level message, or the message this one
+	// replies to (internal/messages.Repo.Send) — carried through so a
+	// realtime consumer (internal/realtime/fanout.go) can render/thread a
+	// live reply without a follow-up fetch.
+	ParentID *uuid.UUID `json:"parent_id,omitempty"`
+	// ParentReplyCount is the parent message's *fresh* denormalized
+	// reply_count immediately after this reply was recorded (nil for a
+	// top-level message) — carried through the same "durable event carries
+	// everything needed" way ReactionUpdatedPayload carries a message's
+	// fresh reaction_counts, so a realtime consumer that already has the
+	// parent bubble on screen can bump its displayed count in place
+	// instead of re-fetching the parent.
+	ParentReplyCount *int64 `json:"parent_reply_count,omitempty"`
+	// PollID is set when this message has a poll attached
+	// (internal/polls) — carried through so a realtime consumer can fetch
+	// and render the poll without waiting for a follow-up request to
+	// discover it exists.
+	PollID    *uuid.UUID `json:"poll_id,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 const TopicReactionUpdated = "reaction.updated"
@@ -60,6 +78,75 @@ type ReactionUpdatedPayload struct {
 	Action          string            `json:"action"` // "added" | "removed"
 	ReactionCounts  map[string]int    `json:"reaction_counts"`
 	LatestReactions []ReactionSummary `json:"latest_reactions"`
+}
+
+const TopicPollVoteUpdated = "poll.vote_updated"
+
+// PollOptionTally is one option's fresh vote_count — the shape carried on
+// the wire in PollVoteUpdatedPayload and the realtime delivery frame, kept
+// separate from polls.Option (which also carries label/position, not
+// needed on every vote update since the client already has those from its
+// initial GET .../polls/{poll_id}).
+type PollOptionTally struct {
+	OptionID  uuid.UUID `json:"option_id"`
+	VoteCount int       `json:"vote_count"`
+}
+
+// PollVoteUpdatedPayload carries a poll's *fresh* denormalized tallies
+// after one user's vote changed — same "durable event carries everything
+// needed" shape as ReactionUpdatedPayload, so a connected client patches
+// its local copy of the poll without re-fetching it. EventID exists for
+// the same redelivery-dedup reason as ReactionUpdatedPayload's.
+type PollVoteUpdatedPayload struct {
+	EventID     uuid.UUID          `json:"event_id"`
+	ChannelID   uuid.UUID          `json:"channel_id"`
+	PollID      uuid.UUID          `json:"poll_id"`
+	ActorID     uuid.UUID          `json:"actor_id"`
+	Options     []PollOptionTally  `json:"options"`
+	TotalVoters int                `json:"total_voters"`
+}
+
+const TopicMessageEdited = "message.edited"
+
+// MessageEditedPayload carries a message's fresh body/edited_at after its
+// sender edited it — same "durable event carries everything needed" shape
+// as ReactionUpdatedPayload, so a connected client patches its local copy
+// in place instead of re-fetching. EventID exists for the same
+// redelivery-dedup reason as ReactionUpdatedPayload's: a message can
+// legitimately be edited more than once, so (channel_id, message_id) alone
+// can't dedup a specific edit the way (channel_id, sequence) dedups a send.
+type MessageEditedPayload struct {
+	EventID   uuid.UUID `json:"event_id"`
+	ChannelID uuid.UUID `json:"channel_id"`
+	MessageID uuid.UUID `json:"message_id"`
+	SenderID  uuid.UUID `json:"sender_id"`
+	Body      string    `json:"body"`
+	EditedAt  time.Time `json:"edited_at"`
+}
+
+const TopicMessagePinUpdated = "message.pin_updated"
+
+// MessagePinUpdatedPayload carries a message's fresh pinned state after a
+// pin or unpin — same "durable event carries everything needed" shape as
+// ReactionUpdatedPayload/PollVoteUpdatedPayload, with the same Action
+// string convention as ReactionUpdatedPayload's ("pinned"/"unpinned"
+// instead of "added"/"removed"). PinnedAt/PinnedBy are both nil on an
+// "unpinned" event (the row's fresh state, which is now cleared) and both
+// set on a "pinned" event; a consumer patches its local copy of the
+// message from these two fields directly rather than just toggling a
+// boolean, so it never has to guess who pinned it. EventID exists for the
+// same redelivery-dedup reason as ReactionUpdatedPayload's: a message can
+// legitimately be pinned and unpinned more than once, so (channel_id,
+// message_id) alone can't dedup a specific pin/unpin the way (channel_id,
+// sequence) dedups a send.
+type MessagePinUpdatedPayload struct {
+	EventID   uuid.UUID  `json:"event_id"`
+	ChannelID uuid.UUID  `json:"channel_id"`
+	MessageID uuid.UUID  `json:"message_id"`
+	ActorID   uuid.UUID  `json:"actor_id"`
+	Action    string     `json:"action"` // "pinned" | "unpinned"
+	PinnedAt  *time.Time `json:"pinned_at"`
+	PinnedBy  *uuid.UUID `json:"pinned_by"`
 }
 
 const TopicReadUpdated = "read.updated"

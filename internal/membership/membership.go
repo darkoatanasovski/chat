@@ -118,18 +118,21 @@ func (r *Repo) ListMembers(ctx context.Context, channelID uuid.UUID) ([]uuid.UUI
 	return members, rows.Err()
 }
 
-// Member is a channel member plus their display name, for UI member lists
-// (GET /channels/{id}/members) — ListMembers itself stays name-free since
-// its other callers (membership cache seeding, quota checks, fanout) only
-// ever need user_ids.
+// Member is a channel member plus their display name and presence, for UI
+// member lists (GET /channels/{id}/members) — ListMembers itself stays
+// name/presence-free since its other callers (membership cache seeding,
+// quota checks, fanout) only ever need user_ids.
 type Member struct {
 	UserID      uuid.UUID
 	DisplayName string
+	// LastActiveAt is nil until this user's first tracked activity — see
+	// internal/users.IsOnline for how it's turned into online status.
+	LastActiveAt *time.Time
 }
 
 func (r *Repo) ListMembersWithNames(ctx context.Context, channelID uuid.UUID) ([]Member, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT cm.user_id, u.display_name
+		SELECT cm.user_id, u.display_name, u.last_active_at
 		FROM channel_members cm
 		JOIN users u ON u.user_id = cm.user_id
 		WHERE cm.channel_id = $1
@@ -143,7 +146,7 @@ func (r *Repo) ListMembersWithNames(ctx context.Context, channelID uuid.UUID) ([
 	var out []Member
 	for rows.Next() {
 		var m Member
-		if err := rows.Scan(&m.UserID, &m.DisplayName); err != nil {
+		if err := rows.Scan(&m.UserID, &m.DisplayName, &m.LastActiveAt); err != nil {
 			return nil, fmt.Errorf("membership: scan: %w", err)
 		}
 		out = append(out, m)

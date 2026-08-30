@@ -1,0 +1,13 @@
+-- message_edit_enabled: the second per-app, owner-configurable setting on
+-- the apps table (see migrations/control/0009_app_thread_settings.sql for
+-- the first, max_thread_depth). Governs whether PATCH
+-- /channels/{id}/messages/{message_id} (cmd/api/handlers_messages.go's
+-- handleEditMessage) is allowed at all for this app's end-users — checked
+-- live on every edit attempt, never cached, same "no surprise staleness"
+-- property max_thread_depth already has.
+--
+-- Defaults to true: most chat products allow editing your own message by
+-- default, and an app that wants a stricter, edit-free experience (e.g. for
+-- compliance/audit reasons) can turn it off explicitly via
+-- PATCH /apps/{app_id}.
+ALTER TABLE apps ADD COLUMN message_edit_enabled BOOLEAN NOT NULL DEFAULT true;

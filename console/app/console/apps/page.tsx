@@ -3,11 +3,18 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { motion } from "framer-motion";
 import { Boxes, Check, Copy, KeyRound, Plus } from "lucide-react";
-import { createApp, listApps, ApiError } from "@/lib/api";
-import type { AppSummary, CreatedApp } from "@/lib/types";
+import { createApp, getAppsMessagesDaily, listApps, ApiError } from "@/lib/api";
+import type { AppDailyMessages, AppSummary, CreatedApp } from "@/lib/types";
 import { ConsoleShell, useSession } from "@/components/shell";
 import { useToast } from "@/components/toast";
-import { Button, ErrorBanner, Input, Label, Modal, Panel, Skeleton } from "@/components/ui";
+import { Button, ErrorBanner, Input, Label, Modal, Panel, Skeleton, Sparkline } from "@/components/ui";
+
+// Matches the backend's dashboardDailyWindowDays (cmd/api/handlers_dashboard.go)
+// — the fallback shape for an app the /messages/daily response hasn't
+// returned yet (still loading, or genuinely has no channels), so a card
+// always has a full week of zeros to chart rather than nothing to chart.
+const DAILY_WINDOW = 7;
+const ZERO_DAILY = Array<number>(DAILY_WINDOW).fill(0);
 
 export default function AppsPage() {
   return (
@@ -21,6 +28,7 @@ function AppsView() {
   const { session } = useSession();
   const toast = useToast();
   const [apps, setApps] = useState<AppSummary[] | null>(null);
+  const [messagesByApp, setMessagesByApp] = useState<Map<number, AppDailyMessages> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
 
@@ -28,6 +36,12 @@ function AppsView() {
     listApps(session.token, session.org.org_id)
       .then(setApps)
       .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
+    // Independent of the apps list itself — a slower or failed load here
+    // shouldn't block the grid, it just means cards render with zeroed
+    // stats until it resolves.
+    getAppsMessagesDaily(session.token)
+      .then((res) => setMessagesByApp(new Map(res.apps.map((a) => [a.app_id, a]))))
+      .catch(() => {});
   }
 
   useEffect(refresh, [session.token, session.org.org_id]);
@@ -53,7 +67,7 @@ function AppsView() {
       {apps === null && (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {[0, 1, 2].map((i) => (
-            <Skeleton key={i} className="h-32" />
+            <Skeleton key={i} className="h-56" />
           ))}
         </div>
       )}
@@ -72,25 +86,43 @@ function AppsView() {
 
       {apps && apps.length > 0 && (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {apps.map((app, i) => (
-            <motion.a
-              key={app.app_id}
-              href={`/apps/${app.app_id}`}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.05, duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-              className="group rounded-2xl border border-border bg-surface p-6 transition-colors duration-150 hover:border-accent/40"
-            >
-              <div className="mb-4 flex items-center justify-between">
-                <span className="grid h-11 w-11 place-items-center rounded-full bg-accent-soft text-accent">
-                  <KeyRound className="h-5 w-5" />
-                </span>
-                <span className="font-mono text-xs text-text-faint">#{app.app_id}</span>
-              </div>
-              <div className="truncate text-[15px] font-semibold text-text">{app.name}</div>
-              <div className="mt-1 text-sm text-text-faint">Created {new Date(app.created_at).toLocaleDateString()}</div>
-            </motion.a>
-          ))}
+          {apps.map((app, i) => {
+            const stats = messagesByApp?.get(app.app_id);
+            const daily = stats?.daily ?? ZERO_DAILY;
+            return (
+              <motion.a
+                key={app.app_id}
+                href={`/console/apps/${app.app_id}`}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: i * 0.05, duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+                className="group flex flex-col rounded-2xl border border-border bg-surface p-6 transition-colors duration-150 hover:border-accent/40"
+              >
+                <div className="mb-4 flex items-center justify-between">
+                  <span className="grid h-11 w-11 place-items-center rounded-full bg-accent-soft text-accent">
+                    <KeyRound className="h-5 w-5" />
+                  </span>
+                  <span className="font-mono text-xs text-text-faint">#{app.app_id}</span>
+                </div>
+                <div className="truncate text-[15px] font-semibold text-text">{app.name}</div>
+                <div className="mt-1 text-sm text-text-faint">Created {new Date(app.created_at).toLocaleDateString()}</div>
+
+                <div className="mt-5 flex items-baseline gap-5 border-t border-border-soft pt-4">
+                  <div>
+                    <div className="text-lg font-semibold text-text">{(stats?.total ?? 0).toLocaleString()}</div>
+                    <div className="text-xs text-text-faint">messages</div>
+                  </div>
+                  <div>
+                    <div className="text-lg font-semibold text-text">{(stats?.today ?? 0).toLocaleString()}</div>
+                    <div className="text-xs text-text-faint">today</div>
+                  </div>
+                </div>
+                <div className="mt-3">
+                  <Sparkline values={daily} />
+                </div>
+              </motion.a>
+            );
+          })}
         </div>
       )}
 

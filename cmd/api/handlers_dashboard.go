@@ -63,7 +63,6 @@ func looksLikeEmail(email string) bool {
 
 type dashboardSignupRequest struct {
 	OrgName  string `json:"org_name"`
-	Tier     string `json:"tier"`
 	Email    string `json:"email"`
 	Password string `json:"password"`
 }
@@ -71,7 +70,13 @@ type dashboardSignupRequest struct {
 // handleDashboardSignup creates a NEW organization together with its first
 // human user (owner) in one step — the dashboard's own onboarding path,
 // distinct from POST /organizations (which mints an org with no person
-// attached, for programmatic/automation use like tools/loadtest).
+// attached, for programmatic/automation use like tools/loadtest and which
+// does accept a caller-chosen tier). Self-serve signup always creates a
+// FREE-tier org, full stop: there is no client input that can change that.
+// A request that still sends a "tier" field (an old client, or a hostile
+// one probing for a way to mint a paid-tier org) is rejected outright by
+// the strict JSON decoder (readJSON's DisallowUnknownFields), since the
+// field no longer exists on this type at all.
 func (a *App) handleDashboardSignup(w http.ResponseWriter, r *http.Request) {
 	var req dashboardSignupRequest
 	if !readJSON(w, r, &req) {
@@ -80,14 +85,6 @@ func (a *App) handleDashboardSignup(w http.ResponseWriter, r *http.Request) {
 	req.OrgName = strings.TrimSpace(req.OrgName)
 	if req.OrgName == "" || len(req.OrgName) > 128 {
 		writeError(w, http.StatusBadRequest, "org_name is required (max 128 chars)")
-		return
-	}
-	req.Tier = strings.ToUpper(strings.TrimSpace(req.Tier))
-	if req.Tier == "" {
-		req.Tier = quota.TierFree
-	}
-	if !validTiers[req.Tier] {
-		writeError(w, http.StatusBadRequest, "tier must be one of FREE, PRO, BUSINESS, ENTERPRISE")
 		return
 	}
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
@@ -107,7 +104,7 @@ func (a *App) handleDashboardSignup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	org, err := a.orgsSvc.CreateOrg(r.Context(), req.OrgName, req.Tier)
+	org, err := a.orgsSvc.CreateOrg(r.Context(), req.OrgName, quota.TierFree)
 	if err != nil {
 		a.log.Error("create organization", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to create organization")
@@ -562,16 +559,112 @@ type dashboardMessagesResponse struct {
 	ByRegion []regionMessagesEntry `json:"by_region"`
 }
 
-// handleDashboardMessages backs the Overview page's messages-sent stat:
-// total messages across the org's apps, broken down by region. Message
-// counts live on the shard databases (channel_sequences.last_sequence, one
-// row per channel, incremented on every send — see internal/messages), not
-// the control plane, so this does a bounded scatter-gather over the small,
-// fixed number of physical shards. That's a deliberate, documented
-// exception to "no scatter-gather on hot paths" (INSTRUCTIONS.md §6): it
-// never runs on the message-send path, only on this low-frequency admin
-// read, same class as CountByRegion above.
-func (a *App) handleDashboardMessages(w http.ResponseWriter, r *http.Request) {
+// dashboardMessagesFor computes total messages sent (broken down by
+// region) across every channel belonging to appIDs — the shared core of
+// both the per-app dashboard tab's messages stat (a single-element
+// appIDs) and, previously, an org-wide aggregate across every app (now
+// retired in favor of the per-app view — see handleDashboardAppMessages).
+// Message counts live on the shard databases
+// (channel_sequences.last_sequence, one row per channel, incremented on
+// every send — see internal/messages), not the control plane, so this
+// does a bounded scatter-gather over the small, fixed number of physical
+// shards. That's a deliberate, documented exception to "no scatter-gather
+// on hot paths" (INSTRUCTIONS.md §6): it never runs on the message-send
+// path, only on this low-frequency admin read, same class as
+// CountByRegion above.
+func (a *App) dashboardMessagesFor(r *http.Request, appIDs []int64) (dashboardMessagesResponse, error) {
+	routeInfo, err := a.channelsRepo.ListRouteInfoByApps(r.Context(), appIDs)
+	if err != nil {
+		return dashboardMessagesResponse{}, fmt.Errorf("list channel route info: %w", err)
+	}
+
+	channelsByShard := map[string][]uuid.UUID{}
+	regionByChannel := map[uuid.UUID]string{}
+	for _, c := range routeInfo {
+		shardID, err := a.router.PhysicalShardID(c.VirtualShard)
+		if err != nil {
+			return dashboardMessagesResponse{}, fmt.Errorf("resolve physical shard: %w", err)
+		}
+		channelsByShard[shardID] = append(channelsByShard[shardID], c.ChannelID)
+		regionByChannel[c.ChannelID] = c.HomeRegion
+	}
+
+	counts := map[string]int64{}
+	var total int64
+	for shardID, channelIDs := range channelsByShard {
+		pool, err := a.shardPools.Get(shardID)
+		if err != nil {
+			return dashboardMessagesResponse{}, fmt.Errorf("resolve shard pool: %w", err)
+		}
+		sums, err := a.messagesRepo.SumSequencesByChannels(r.Context(), pool, channelIDs)
+		if err != nil {
+			return dashboardMessagesResponse{}, fmt.Errorf("sum message sequences: %w", err)
+		}
+		for channelID, count := range sums {
+			counts[regionByChannel[channelID]] += count
+			total += count
+		}
+	}
+
+	out := make([]regionMessagesEntry, len(dashboardRegionOrder))
+	for i, region := range dashboardRegionOrder {
+		out[i] = regionMessagesEntry{Region: region, Messages: counts[region]}
+	}
+	return dashboardMessagesResponse{Total: total, ByRegion: out}, nil
+}
+
+// handleDashboardAppMessages backs GET /dashboard/apps/{app_id}/messages —
+// this one app's messages-sent stat (total + by-region) for its Dashboard
+// tab. Scoped to a single app rather than the org's whole app list, same
+// "per app, not per org" shape as handleDashboardListChannels/
+// handleDashboardListBlocks.
+func (a *App) handleDashboardAppMessages(w http.ResponseWriter, r *http.Request) {
+	orgIdentity, _ := orgIdentityFromContext(r.Context())
+	app, ok := a.requireOwnedApp(w, r, orgIdentity.OrgID)
+	if !ok {
+		return
+	}
+
+	out, err := a.dashboardMessagesFor(r, []int64{app.AppID})
+	if err != nil {
+		a.log.Error("load app message usage", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load message usage")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// ---- per-app daily messages (Apps grid mini chart) ----
+
+const dashboardDailyWindowDays = 7
+
+type appDailyMessagesEntry struct {
+	AppID int64   `json:"app_id"`
+	Name  string  `json:"name"`
+	Total int64   `json:"total"`
+	Today int64   `json:"today"`
+	Daily []int64 `json:"daily"`
+}
+
+type dashboardMessagesDailyResponse struct {
+	Days []string                 `json:"days"`
+	Apps []appDailyMessagesEntry `json:"apps"`
+}
+
+// handleDashboardAppsMessagesDaily backs the Apps grid's per-app card: an
+// all-time total (cheap, off channel_sequences, same source as
+// dashboardMessagesFor) plus a message count for each of the last
+// dashboardDailyWindowDays UTC calendar days — always exactly that many
+// entries, oldest first, even for a day with zero messages, so the
+// frontend's sparkline always draws a full week (see console's Sparkline
+// component) instead of an empty chart. The daily breakdown scans the
+// messages table (CountDailyByChannels) rather than reading
+// channel_sequences, so unlike the all-time total this is deliberately
+// bounded to one week. This one stays org-wide (every app in one response)
+// since the Apps grid is a legitimate multi-app view — unlike the retired
+// org-wide messages/polls dashboards, it was never replaced by a per-app
+// endpoint.
+func (a *App) handleDashboardAppsMessagesDaily(w http.ResponseWriter, r *http.Request) {
 	orgIdentity, _ := orgIdentityFromContext(r.Context())
 
 	appList, err := a.appsRepo.ListByOrg(r.Context(), orgIdentity.OrgID)
@@ -593,7 +686,7 @@ func (a *App) handleDashboardMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	channelsByShard := map[string][]uuid.UUID{}
-	regionByChannel := map[uuid.UUID]string{}
+	appByChannel := map[uuid.UUID]int64{}
 	for _, c := range routeInfo {
 		shardID, err := a.router.PhysicalShardID(c.VirtualShard)
 		if err != nil {
@@ -602,11 +695,29 @@ func (a *App) handleDashboardMessages(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		channelsByShard[shardID] = append(channelsByShard[shardID], c.ChannelID)
-		regionByChannel[c.ChannelID] = c.HomeRegion
+		appByChannel[c.ChannelID] = c.AppID
 	}
 
-	counts := map[string]int64{}
-	var total int64
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	since := today.AddDate(0, 0, -(dashboardDailyWindowDays - 1))
+
+	days := make([]string, dashboardDailyWindowDays)
+	dayIndex := map[string]int{}
+	for i := 0; i < dashboardDailyWindowDays; i++ {
+		key := since.AddDate(0, 0, i).Format("2006-01-02")
+		days[i] = key
+		dayIndex[key] = i
+	}
+
+	// Pre-sized per app so every app reports a full week of zeros even if
+	// it has channels but sent nothing, or no channels at all.
+	dailyByApp := make(map[int64][]int64, len(appList))
+	totalByApp := make(map[int64]int64, len(appList))
+	for _, app := range appList {
+		dailyByApp[app.AppID] = make([]int64, dashboardDailyWindowDays)
+	}
+
 	for shardID, channelIDs := range channelsByShard {
 		pool, err := a.shardPools.Get(shardID)
 		if err != nil {
@@ -614,6 +725,7 @@ func (a *App) handleDashboardMessages(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to load message usage")
 			return
 		}
+
 		sums, err := a.messagesRepo.SumSequencesByChannels(r.Context(), pool, channelIDs)
 		if err != nil {
 			a.log.Error("sum message sequences", "error", err)
@@ -621,14 +733,39 @@ func (a *App) handleDashboardMessages(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for channelID, count := range sums {
-			counts[regionByChannel[channelID]] += count
-			total += count
+			totalByApp[appByChannel[channelID]] += count
+		}
+
+		daily, err := a.messagesRepo.CountDailyByChannels(r.Context(), pool, channelIDs, since)
+		if err != nil {
+			a.log.Error("count daily messages", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to load message usage")
+			return
+		}
+		for _, dc := range daily {
+			appID, ok := appByChannel[dc.ChannelID]
+			if !ok {
+				continue
+			}
+			idx, ok := dayIndex[dc.Day.Format("2006-01-02")]
+			if !ok {
+				continue
+			}
+			dailyByApp[appID][idx] += dc.Count
 		}
 	}
 
-	out := make([]regionMessagesEntry, len(dashboardRegionOrder))
-	for i, region := range dashboardRegionOrder {
-		out[i] = regionMessagesEntry{Region: region, Messages: counts[region]}
+	out := make([]appDailyMessagesEntry, len(appList))
+	for i, app := range appList {
+		daily := dailyByApp[app.AppID]
+		out[i] = appDailyMessagesEntry{
+			AppID: app.AppID,
+			Name:  app.Name,
+			Total: totalByApp[app.AppID],
+			Today: daily[len(daily)-1],
+			Daily: daily,
+		}
 	}
-	writeJSON(w, http.StatusOK, dashboardMessagesResponse{Total: total, ByRegion: out})
+
+	writeJSON(w, http.StatusOK, dashboardMessagesDailyResponse{Days: days, Apps: out})
 }

@@ -67,10 +67,15 @@ func orgUserIdentityFromContext(ctx context.Context) (OrgUserIdentity, bool) {
 	return id, ok
 }
 
-// AppIdentity is an authenticated App, verified via API key/secret rather
-// than a bearer token — see requireAppCredentials.
+// AppIdentity is an authenticated App — either verified directly via API
+// key/secret (requireAppCredentials, POST /apps/token only) or via the
+// Bearer JWT that credential exchange mints (requireAppJWT, POST /users).
+// APIKey is set by both paths — requireAppJWT needs it to look up the live
+// revocation check on every request; requireAppCredentials sets it so
+// handleCreateAppToken doesn't need to re-parse the Basic auth header.
 type AppIdentity struct {
-	AppID int64
+	AppID  int64
+	APIKey string
 }
 
 func appIdentityFromContext(ctx context.Context) (AppIdentity, bool) {
@@ -185,11 +190,11 @@ func (a *App) requireOwnerRole(next http.HandlerFunc) http.HandlerFunc {
 
 // requireAppCredentials verifies an App's API key/secret (HTTP Basic:
 // key as username, secret as password) and injects AppIdentity. Used only
-// by POST /users — this is the boundary a business's own backend calls
-// through to create its end-users, never something an end-user presents
-// themselves. Verified live against Postgres on every call
-// (apps.CredentialRepo.Verify), not a signed token, so a revoked
-// credential stops working immediately.
+// by POST /apps/token — the one place this platform still asks for the raw
+// secret — to mint the short-lived Bearer JWT that POST /users (requireAppJWT)
+// actually runs on. Verified live against Postgres on every call
+// (apps.CredentialRepo.Verify), not a signed token, so a revoked credential
+// can never even mint a fresh token.
 func (a *App) requireAppCredentials(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key, secret, ok := r.BasicAuth()
@@ -202,7 +207,43 @@ func (a *App) requireAppCredentials(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "invalid or revoked app credentials")
 			return
 		}
-		ctx := context.WithValue(r.Context(), appIdentityKey, AppIdentity{AppID: appID})
+		ctx := context.WithValue(r.Context(), appIdentityKey, AppIdentity{AppID: appID, APIKey: key})
+		next(w, r.WithContext(ctx))
+	}
+}
+
+// requireAppJWT verifies the Bearer JWT POST /apps/token mints (itself
+// gated by requireAppCredentials, above) and injects AppIdentity. This is
+// what POST /users actually runs on: a business's backend exchanges its
+// App's key+secret for this token once per appTokenTTL window instead of
+// sending the raw secret on every end-user it creates. A signed token alone
+// can't be invalidated before its own expiry, so — same guarantee Basic
+// auth's live Verify gives — api_key is re-checked live against Postgres on
+// every call (apps.CredentialRepo.IsActive): a revoked credential's
+// already-issued tokens stop working immediately, not just future ones.
+func (a *App) requireAppJWT(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || token == "" {
+			writeError(w, http.StatusUnauthorized, "missing bearer token")
+			return
+		}
+		claims, err := a.signer.Verify(token)
+		if err != nil || claims.Type != auth.ClaimsTypeApp {
+			writeError(w, http.StatusUnauthorized, "invalid or expired token")
+			return
+		}
+		active, err := a.appCredentials.IsActive(r.Context(), claims.AppID, claims.APIKey)
+		if err != nil {
+			a.log.Error("check app credential active", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to verify credential")
+			return
+		}
+		if !active {
+			writeError(w, http.StatusUnauthorized, "invalid or revoked app credentials")
+			return
+		}
+		ctx := context.WithValue(r.Context(), appIdentityKey, AppIdentity{AppID: claims.AppID, APIKey: claims.APIKey})
 		next(w, r.WithContext(ctx))
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"testing"
@@ -10,13 +11,14 @@ import (
 
 // signUpDashboardOrg drives POST /dashboard/signup end to end and returns
 // the new owner's session token, org_id, and email — a fixture for every
-// other dashboard test.
-func signUpDashboardOrg(t *testing.T, app *App, orgName, tier string) (token string, orgID int64, email string) {
+// other dashboard test. Self-serve signup always creates a FREE org (see
+// handleDashboardSignup) — there's no tier to pass in.
+func signUpDashboardOrg(t *testing.T, app *App, orgName string) (token string, orgID int64, email string) {
 	t.Helper()
 	email = "owner-" + uuid.NewString() + "@example.com"
 	var resp dashboardAuthResponse
 	rec := do(t, app, jsonRequest("POST", "/dashboard/signup", dashboardSignupRequest{
-		OrgName: orgName, Tier: tier, Email: email, Password: "hunter22222",
+		OrgName: orgName, Email: email, Password: "hunter22222",
 	}), &resp)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("signup: status = %d, body = %s", rec.Code, rec.Body.String())
@@ -27,9 +29,21 @@ func signUpDashboardOrg(t *testing.T, app *App, orgName, tier string) (token str
 	return resp.Token, resp.Org.OrgID, email
 }
 
+// bumpOrgTierForTest raises an org's tier directly in the control DB,
+// bypassing the API entirely — the only way to get a non-FREE org out of
+// dashboard signup now that it's hard-locked to FREE, needed by the rare
+// test that exercises quota-gated behavior (e.g. a second app in one org)
+// unrelated to what it's actually testing.
+func bumpOrgTierForTest(t *testing.T, app *App, orgID int64, tier string) {
+	t.Helper()
+	if _, err := app.controlPool.Exec(context.Background(), `UPDATE organizations SET tier = $1 WHERE org_id = $2`, tier, orgID); err != nil {
+		t.Fatalf("bump org tier: %v", err)
+	}
+}
+
 func TestDashboardSignup_ValidCreatesOwner(t *testing.T) {
 	app := testApp(t)
-	token, orgID, email := signUpDashboardOrg(t, app, "Acme Inc", "PRO")
+	token, orgID, email := signUpDashboardOrg(t, app, "Acme Inc")
 	if token == "" || orgID == 0 {
 		t.Fatalf("expected a non-empty token and org id")
 	}
@@ -42,7 +56,7 @@ func TestDashboardSignup_ValidCreatesOwner(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("me: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if me.User.Email != email || me.Org.OrgID != orgID || me.Org.Tier != "PRO" {
+	if me.User.Email != email || me.Org.OrgID != orgID || me.Org.Tier != "FREE" {
 		t.Fatalf("unexpected /dashboard/me response: %+v", me)
 	}
 }
@@ -51,12 +65,20 @@ func TestDashboardSignup_Validation(t *testing.T) {
 	app := testApp(t)
 	cases := []struct {
 		name string
-		req  dashboardSignupRequest
+		req  any
 	}{
 		{"empty org name", dashboardSignupRequest{OrgName: "  ", Email: "a@example.com", Password: "longenough"}},
 		{"invalid email", dashboardSignupRequest{OrgName: "Acme", Email: "not-an-email", Password: "longenough"}},
 		{"short password", dashboardSignupRequest{OrgName: "Acme", Email: "a@example.com", Password: "short"}},
-		{"invalid tier", dashboardSignupRequest{OrgName: "Acme", Tier: "PLATINUM", Email: "a@example.com", Password: "longenough"}},
+		// dashboardSignupRequest has no Tier field at all anymore — self-serve
+		// signup is FREE-only, full stop. The strict JSON decoder
+		// (DisallowUnknownFields, see readJSON) means a request that still
+		// includes a "tier" field — an old client, or a hostile one probing
+		// for a way to mint a paid-tier org — is rejected outright rather
+		// than silently ignored.
+		{"unknown tier field rejected", map[string]any{
+			"org_name": "Acme", "tier": "ENTERPRISE", "email": "a@example.com", "password": "longenough",
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -86,7 +108,7 @@ func TestDashboardSignup_DuplicateEmailRejected(t *testing.T) {
 
 func TestDashboardLogin_ValidAndInvalid(t *testing.T) {
 	app := testApp(t)
-	_, _, email := signUpDashboardOrg(t, app, "Login Test Org", "FREE")
+	_, _, email := signUpDashboardOrg(t, app, "Login Test Org")
 
 	var resp dashboardAuthResponse
 	rec := do(t, app, jsonRequest("POST", "/dashboard/login", dashboardLoginRequest{Email: email, Password: "hunter22222"}), &resp)
@@ -123,7 +145,7 @@ func TestDashboardOrgAuth_AcceptsBothOrgAdminAndOrgUserTokens(t *testing.T) {
 	}
 
 	// Dashboard session path (new, attributed to a person).
-	dashToken, orgID, _ := signUpDashboardOrg(t, app, "Auth Path Org", "FREE")
+	dashToken, orgID, _ := signUpDashboardOrg(t, app, "Auth Path Org")
 	var appsResp []appResponse
 	rec = do(t, app, authed(jsonRequest("GET", fmt.Sprintf("/organizations/%d/apps", orgID), nil), dashToken), &appsResp)
 	if rec.Code != http.StatusOK {
@@ -133,7 +155,7 @@ func TestDashboardOrgAuth_AcceptsBothOrgAdminAndOrgUserTokens(t *testing.T) {
 
 func TestDashboardTeam_InviteAcceptAndList(t *testing.T) {
 	app := testApp(t)
-	ownerToken, orgID, ownerEmail := signUpDashboardOrg(t, app, "Team Org", "PRO")
+	ownerToken, orgID, ownerEmail := signUpDashboardOrg(t, app, "Team Org")
 	_ = ownerEmail
 
 	inviteeEmail := "invitee-" + uuid.NewString() + "@example.com"
@@ -180,7 +202,7 @@ func TestDashboardTeam_InviteAcceptAndList(t *testing.T) {
 
 func TestDashboardTeam_InviteRequiresOwnerRole(t *testing.T) {
 	app := testApp(t)
-	ownerToken, _, _ := signUpDashboardOrg(t, app, "Owner Gate Org", "PRO")
+	ownerToken, _, _ := signUpDashboardOrg(t, app, "Owner Gate Org")
 
 	var invite inviteResponse
 	memberEmail := "member-" + uuid.NewString() + "@example.com"
@@ -204,7 +226,7 @@ func TestDashboardTeam_InviteRequiresOwnerRole(t *testing.T) {
 
 func TestDashboardTeam_RemoveMember(t *testing.T) {
 	app := testApp(t)
-	ownerToken, _, _ := signUpDashboardOrg(t, app, "Remove Org", "PRO")
+	ownerToken, _, _ := signUpDashboardOrg(t, app, "Remove Org")
 
 	var invite inviteResponse
 	do(t, app, authed(jsonRequest("POST", "/dashboard/team/invites", createInviteRequest{Email: "removeme-" + uuid.NewString() + "@example.com", Role: "member"}), ownerToken), &invite)
@@ -225,7 +247,7 @@ func TestDashboardTeam_RemoveMember(t *testing.T) {
 
 func TestDashboardTeam_CannotRemoveLastOwner(t *testing.T) {
 	app := testApp(t)
-	ownerToken, _, _ := signUpDashboardOrg(t, app, "Last Owner Org", "PRO")
+	ownerToken, _, _ := signUpDashboardOrg(t, app, "Last Owner Org")
 
 	var invite inviteResponse
 	do(t, app, authed(jsonRequest("POST", "/dashboard/team/invites", createInviteRequest{Email: "co-owner-" + uuid.NewString() + "@example.com", Role: "owner"}), ownerToken), &invite)
@@ -253,7 +275,7 @@ func TestDashboardTeam_CannotRemoveLastOwner(t *testing.T) {
 
 func TestDashboardUsage_ReflectsAppsAndPlanLimit(t *testing.T) {
 	app := testApp(t)
-	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Usage Org", "FREE")
+	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Usage Org")
 
 	var usage usageResponse
 	rec := do(t, app, authed(jsonRequest("GET", "/dashboard/usage", nil), ownerToken), &usage)
@@ -278,11 +300,11 @@ func TestDashboardUsage_ReflectsAppsAndPlanLimit(t *testing.T) {
 // every region in dashboardRegionOrder must always be present (0 if empty).
 func TestDashboardRegions_CountsEndUsersByRegionScopedToOwnOrg(t *testing.T) {
 	app := testApp(t)
-	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Regions Org", "PRO")
+	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Regions Org")
 	appID, key, secret := createTestApp(t, app, orgID, ownerToken)
 
 	for _, region := range []string{"eu", "eu", "us"} {
-		rec := do(t, app, basicAuthed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "u-" + uuid.NewString(), Region: region}), key, secret), nil)
+		rec := do(t, app, authed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "u-" + uuid.NewString(), Region: region}), appAccessToken(t, app, key, secret)), nil)
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("create end user in %s: status = %d, body = %s", region, rec.Code, rec.Body.String())
 		}
@@ -302,7 +324,7 @@ func TestDashboardRegions_CountsEndUsersByRegionScopedToOwnOrg(t *testing.T) {
 	}
 
 	// A second org's dashboard token must see nothing from the first org's app.
-	otherToken, _, _ := signUpDashboardOrg(t, app, "Other Regions Org", "FREE")
+	otherToken, _, _ := signUpDashboardOrg(t, app, "Other Regions Org")
 	var otherRegions []regionUsageResponse
 	do(t, app, authed(jsonRequest("GET", "/dashboard/regions", nil), otherToken), &otherRegions)
 	for _, r := range otherRegions {
@@ -312,18 +334,22 @@ func TestDashboardRegions_CountsEndUsersByRegionScopedToOwnOrg(t *testing.T) {
 	}
 }
 
-// TestDashboardMessages_SumsSentMessagesByRegionScopedToOwnOrg exercises the
-// Overview page's messages-sent stat end to end: it reads exact per-channel
-// message counts off channel_sequences on the shard databases (never
-// scanning the messages table itself — see messages.Repo.SumSequencesByChannels)
-// and must never leak another org's message counts into the total.
-func TestDashboardMessages_SumsSentMessagesByRegionScopedToOwnOrg(t *testing.T) {
+// TestDashboardAppMessages_SumsSentMessagesByRegionScopedToOwnApp exercises
+// the app Dashboard tab's messages-sent stat end to end: it reads exact
+// per-channel message counts off channel_sequences on the shard databases
+// (never scanning the messages table itself — see
+// messages.Repo.SumSequencesByChannels) and must never leak another app's
+// message counts into the total — whether that other app belongs to a
+// different org entirely, or is simply a second app within the SAME org
+// (the whole point of moving this from an org-wide aggregate to a
+// per-app view).
+func TestDashboardAppMessages_SumsSentMessagesByRegionScopedToOwnApp(t *testing.T) {
 	app := testApp(t)
-	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Messages Org", "PRO")
-	_, key, secret := createTestApp(t, app, orgID, ownerToken)
+	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Messages Org")
+	appID, key, secret := createTestApp(t, app, orgID, ownerToken)
 
 	var user createUserResponse
-	rec := do(t, app, basicAuthed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "Sender", Region: "eu"}), key, secret), &user)
+	rec := do(t, app, authed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "Sender", Region: "eu"}), appAccessToken(t, app, key, secret)), &user)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create test user: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -333,8 +359,9 @@ func TestDashboardMessages_SumsSentMessagesByRegionScopedToOwnOrg(t *testing.T) 
 		sendTestMessage(t, app, user.Token, channel.ChannelID, fmt.Sprintf("message %d", i))
 	}
 
+	appMessagesPath := fmt.Sprintf("/dashboard/apps/%d/messages", appID)
 	var messages dashboardMessagesResponse
-	rec = do(t, app, authed(jsonRequest("GET", "/dashboard/messages", nil), ownerToken), &messages)
+	rec = do(t, app, authed(jsonRequest("GET", appMessagesPath, nil), ownerToken), &messages)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -351,11 +378,69 @@ func TestDashboardMessages_SumsSentMessagesByRegionScopedToOwnOrg(t *testing.T) 
 		t.Fatalf("unexpected region counts: %+v", got)
 	}
 
-	// A second org's dashboard token must see nothing from the first org's messages.
-	otherToken, _, _ := signUpDashboardOrg(t, app, "Other Messages Org", "FREE")
-	var otherMessages dashboardMessagesResponse
-	do(t, app, authed(jsonRequest("GET", "/dashboard/messages", nil), otherToken), &otherMessages)
-	if otherMessages.Total != 0 {
-		t.Fatalf("expected a brand-new org to see zero messages, got %+v", otherMessages)
+	// A second app in the SAME org must see none of the first app's
+	// messages — this is the per-app isolation this endpoint exists for.
+	otherAppID, _, _ := createTestApp(t, app, orgID, ownerToken)
+	var otherAppMessages dashboardMessagesResponse
+	do(t, app, authed(jsonRequest("GET", fmt.Sprintf("/dashboard/apps/%d/messages", otherAppID), nil), ownerToken), &otherAppMessages)
+	if otherAppMessages.Total != 0 {
+		t.Fatalf("expected a sibling app to see zero messages, got %+v", otherAppMessages)
+	}
+
+	// A different org's dashboard token can't even reach this app's stat.
+	otherOrgToken, _, _ := signUpDashboardOrg(t, app, "Other Messages Org")
+	rec = do(t, app, authed(jsonRequest("GET", appMessagesPath, nil), otherOrgToken), nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-org access: status = %d, want 403, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestDashboardAppPolls_ScopedToOwnApp proves the app Dashboard tab's polls
+// panel only ever shows polls created in ITS OWN channels — not a sibling
+// app in the same org, and not another org entirely.
+func TestDashboardAppPolls_ScopedToOwnApp(t *testing.T) {
+	app := testApp(t)
+	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Polls Org")
+	appID, key, secret := createTestApp(t, app, orgID, ownerToken)
+
+	var user createUserResponse
+	rec := do(t, app, authed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "Poller", Region: "eu"}), appAccessToken(t, app, key, secret)), &user)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create test user: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	channel := createTestChannel(t, app, user.Token, "polls-general")
+
+	var created pollResponse
+	rec = do(t, app, authed(jsonRequest("POST", "/channels/"+channel.ChannelID+"/polls", newPollBody("Best language?", []string{"Go", "Rust"}, false, nil)), user.Token), &created)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create poll: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	appPollsPath := fmt.Sprintf("/dashboard/apps/%d/polls", appID)
+	var listed []dashboardPollResponse
+	rec = do(t, app, authed(jsonRequest("GET", appPollsPath, nil), ownerToken), &listed)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(listed) != 1 || listed[0].PollID != created.PollID {
+		t.Fatalf("expected exactly the one poll just created, got %+v", listed)
+	}
+	if listed[0].AppID != appID || listed[0].ChannelName != "polls-general" {
+		t.Fatalf("unexpected poll metadata: %+v", listed[0])
+	}
+
+	// A second app in the SAME org must see none of the first app's polls.
+	otherAppID, _, _ := createTestApp(t, app, orgID, ownerToken)
+	var otherAppPolls []dashboardPollResponse
+	do(t, app, authed(jsonRequest("GET", fmt.Sprintf("/dashboard/apps/%d/polls", otherAppID), nil), ownerToken), &otherAppPolls)
+	if len(otherAppPolls) != 0 {
+		t.Fatalf("expected a sibling app to see zero polls, got %+v", otherAppPolls)
+	}
+
+	// A different org's dashboard token can't even reach this app's polls.
+	otherOrgToken, _, _ := signUpDashboardOrg(t, app, "Other Polls Org")
+	rec = do(t, app, authed(jsonRequest("GET", appPollsPath, nil), otherOrgToken), nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-org access: status = %d, want 403, body = %s", rec.Code, rec.Body.String())
 	}
 }

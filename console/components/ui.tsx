@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
-import { animate, useMotionValue, useTransform } from "framer-motion";
-import { Loader2, X } from "lucide-react";
+import { animate, motion, useMotionValue, useTransform } from "framer-motion";
+import { Check, Loader2, X } from "lucide-react";
 import { twMerge } from "tailwind-merge";
 
 // twMerge (not plain concatenation) because every component below accepts a
@@ -125,6 +125,53 @@ export function Badge({
   );
 }
 
+// StatusDot renders a small filled circle for online/offline presence —
+// green when online, a faint neutral tone otherwise. The ring uses the
+// current background color so it reads cleanly whether it's placed inline
+// or overlapping an avatar (surface/surface-2 both pass a matching
+// `ringClassName`).
+export function StatusDot({
+  online,
+  ringClassName = "ring-surface",
+  className,
+}: {
+  online: boolean;
+  ringClassName?: string;
+  className?: string;
+}) {
+  return (
+    <span
+      className={cx(
+        "block h-2.5 w-2.5 shrink-0 rounded-full ring-2",
+        online ? "bg-success" : "bg-text-faint/50",
+        ringClassName,
+        className
+      )}
+      title={online ? "Online" : "Offline"}
+    />
+  );
+}
+
+// formatLastSeen turns a UserStatus into the short label shown next to a
+// StatusDot — "Online" while within the server's online window, otherwise
+// "Last seen …" relative to last_active_at, or "Never active" when this
+// user has no tracked activity at all yet.
+export function formatLastSeen(status: { is_online: boolean; last_active_at?: string }): string {
+  if (status.is_online) return "Online";
+  if (!status.last_active_at) return "Never active";
+
+  const then = new Date(status.last_active_at).getTime();
+  const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (seconds < 60) return "Last seen just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `Last seen ${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `Last seen ${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `Last seen ${days}d ago`;
+  return `Last seen ${new Date(status.last_active_at).toLocaleDateString()}`;
+}
+
 export function ErrorBanner({ children }: { children: ReactNode }) {
   return (
     <div className="animate-fade-in-up flex items-start gap-2.5 rounded-xl border border-danger/30 bg-danger-soft px-4 py-3 text-[15px] text-danger">
@@ -190,6 +237,9 @@ export function Modal({
   );
 }
 
+// Dark console theme: light-ish text on a translucent tinted dark
+// background reads clearly; the light-theme equivalent (dark text on a
+// pale tint) would go the other way if this theme flips back to light.
 const avatarPalette = [
   "bg-blue-500/20 text-blue-300 ring-blue-500/25",
   "bg-violet-500/20 text-violet-300 ring-violet-500/25",
@@ -227,6 +277,76 @@ export function Skeleton({ className }: { className?: string }) {
   return <div className={cx("animate-shimmer rounded-lg", className)} />;
 }
 
+/** A minimal 7-day trend line for an app card's "quick preview" of message
+ * volume (see console's Apps page) — no axes, gridlines or legend, matching
+ * a sparkline's job as a glance-and-move-on shape rather than a chart to
+ * read values off of; the exact numbers sit next to it as Total/Today. A
+ * day with zero messages is still a plotted point, never an omitted one —
+ * an app that sent nothing this week still draws a flat baseline across
+ * all `values.length` days rather than an empty box, so "no activity" is
+ * visibly a fact about the week, not a missing chart. */
+export function Sparkline({ values, height = 40, className }: { values: number[]; height?: number; className?: string }) {
+  const width = 120;
+  const padX = 3;
+  const padY = 5;
+  const innerW = width - padX * 2;
+  const innerH = height - padY * 2;
+  const n = Math.max(values.length, 1);
+  const stepX = n > 1 ? innerW / (n - 1) : 0;
+  const max = Math.max(...values, 0);
+  const baseline = height - padY;
+
+  const points = values.map((v, i) => ({
+    x: padX + i * stepX,
+    y: max === 0 ? baseline : padY + innerH - (v / max) * innerH,
+  }));
+
+  const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(" ");
+  const areaPath =
+    points.length > 0
+      ? `${linePath} L ${points[points.length - 1].x.toFixed(2)} ${baseline} L ${points[0].x.toFixed(2)} ${baseline} Z`
+      : "";
+  const last = points[points.length - 1];
+
+  return (
+    <svg
+      width="100%"
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
+      className={cx("block overflow-visible", className)}
+      role="img"
+      aria-label={
+        max === 0
+          ? `No messages in the last ${values.length} days`
+          : `Messages for the last ${values.length} days, most recent ${values[values.length - 1]}`
+      }
+    >
+      {areaPath && <path d={areaPath} fill="var(--color-accent)" opacity={0.1} stroke="none" />}
+      <path
+        d={linePath}
+        fill="none"
+        stroke="var(--color-accent)"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        vectorEffect="non-scaling-stroke"
+      />
+      {last && (
+        <circle
+          cx={last.x}
+          cy={last.y}
+          r={4}
+          fill="var(--color-accent)"
+          stroke="var(--color-surface)"
+          strokeWidth={2}
+          vectorEffect="non-scaling-stroke"
+        />
+      )}
+    </svg>
+  );
+}
+
 /** Counts up from 0 to `value` whenever it changes — used anywhere a raw
  * stat number appears (usage/overview stat cards) so updates read as live. */
 export function AnimatedNumber({ value, className }: { value: number; className?: string }) {
@@ -245,4 +365,41 @@ export function AnimatedNumber({ value, className }: { value: number; className?
   }, [value]);
 
   return <span className={className}>{display}</span>;
+}
+
+/** The step indicator for the signup → first-app onboarding wizard (shared
+ * between /signup and Overview's zero-apps state so both feel like one
+ * continuous flow even though they're separate pages). Completed steps show
+ * a checkmark, the active step is outlined, upcoming steps are faint. */
+export function WizardProgress({ step, total, labels }: { step: number; total: number; labels: string[] }) {
+  return (
+    <div className="mb-8 flex items-center justify-center">
+      {Array.from({ length: total }).map((_, i) => {
+        const n = i + 1;
+        const done = n < step;
+        const active = n === step;
+        return (
+          <div key={n} className="flex items-center">
+            <div className="flex flex-col items-center gap-1.5">
+              <motion.div
+                initial={{ scale: 0.6, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                transition={{ delay: i * 0.08, type: "spring", stiffness: 400, damping: 22 }}
+                className={cx(
+                  "grid h-7 w-7 shrink-0 place-items-center rounded-full border text-xs font-semibold",
+                  done && "border-accent bg-accent text-bg",
+                  active && "border-accent bg-accent-soft text-accent",
+                  !done && !active && "border-border text-text-faint"
+                )}
+              >
+                {done ? <Check className="h-3.5 w-3.5" /> : n}
+              </motion.div>
+              <span className={cx("whitespace-nowrap text-[11px]", active ? "text-text" : "text-text-faint")}>{labels[i]}</span>
+            </div>
+            {n < total && <div className={cx("mb-4 h-px w-10 sm:w-14", done ? "bg-accent" : "bg-border")} />}
+          </div>
+        );
+      })}
+    </div>
+  );
 }

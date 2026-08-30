@@ -21,7 +21,7 @@ export default function AcceptInvitePage() {
     try {
       const session = await acceptInvite(params.token, password);
       saveSession(session);
-      router.push("/overview");
+      router.push("/console/overview");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
     } finally {

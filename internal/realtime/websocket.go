@@ -27,6 +27,16 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+// PresenceToucher marks a user active right now — implemented by
+// internal/users.Service.TouchActivity, injected here rather than this
+// package importing internal/users directly, matching how ConnectHandler
+// already takes hub/registry/delivery as narrow collaborators rather than
+// owning account storage itself. Nil-safe: a nil PresenceToucher (e.g. in
+// tests that don't care about presence) simply skips every touch.
+type PresenceToucher interface {
+	TouchActivity(ctx context.Context, userID uuid.UUID) error
+}
+
 // ConnectHandler upgrades to a WebSocket after verifying the bearer token
 // carried on the query string (browsers cannot set arbitrary headers on the
 // WebSocket handshake). It never trusts a client-asserted user_id/region —
@@ -39,10 +49,32 @@ type ConnectHandler struct {
 	gatewayID string
 	metrics   *metrics.Metrics
 	log       *slog.Logger
+	// presence marks this connection's user active on connect, on every
+	// heartbeat pong (~pingInterval cadence, so a connected-but-idle user
+	// still reads as online), and once more on disconnect (so
+	// last_active_at freezes at the true last-seen instant). See
+	// internal/users.OnlineWindow for how that recency becomes is_online.
+	presence PresenceToucher
 }
 
-func NewConnectHandler(signer *auth.Signer, hub *Hub, registry *Registry, delivery *Delivery, gatewayID string, m *metrics.Metrics, log *slog.Logger) *ConnectHandler {
-	return &ConnectHandler{signer: signer, hub: hub, registry: registry, delivery: delivery, gatewayID: gatewayID, metrics: m, log: log}
+func NewConnectHandler(signer *auth.Signer, hub *Hub, registry *Registry, delivery *Delivery, gatewayID string, m *metrics.Metrics, log *slog.Logger, presence PresenceToucher) *ConnectHandler {
+	return &ConnectHandler{signer: signer, hub: hub, registry: registry, delivery: delivery, gatewayID: gatewayID, metrics: m, log: log, presence: presence}
+}
+
+// touchPresence is best-effort and never blocks the caller: a failed or
+// slow write to the control-plane database should never stall a socket
+// upgrade, a ping cycle, or a disconnect cleanup.
+func (h *ConnectHandler) touchPresence(userID uuid.UUID) {
+	if h.presence == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := h.presence.TouchActivity(ctx, userID); err != nil {
+			h.log.Warn("touch presence", "error", err, "user_id", userID)
+		}
+	}()
 }
 
 func (h *ConnectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +97,7 @@ func (h *ConnectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	conn := h.hub.Register(userID, claims.Region)
+	h.touchPresence(userID)
 	if h.metrics != nil {
 		h.metrics.WebSocketConnectionsActive.Inc()
 	}
@@ -79,6 +112,10 @@ func (h *ConnectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.hub.Unregister(conn)
 		_ = h.registry.Unregister(context.Background(), userID, conn.ID)
 		_ = wsConn.Close()
+		// One last touch so last_active_at freezes at the true moment this
+		// user actually went away, rather than at their last ping (up to
+		// pingInterval stale) or last inbound frame.
+		h.touchPresence(userID)
 		if h.metrics != nil {
 			h.metrics.WebSocketConnectionsActive.Dec()
 			h.metrics.WebSocketDisconnectsTotal.WithLabelValues(reason).Inc()
@@ -145,6 +182,7 @@ func (h *ConnectHandler) readPump(ctx context.Context, wsConn *websocket.Conn, u
 	wsConn.SetReadDeadline(time.Now().Add(pongWait))
 	wsConn.SetPongHandler(func(string) error {
 		wsConn.SetReadDeadline(time.Now().Add(pongWait))
+		h.touchPresence(userID)
 		return nil
 	})
 
@@ -166,6 +204,7 @@ func (h *ConnectHandler) handleInbound(ctx context.Context, userID uuid.UUID, da
 	if err := json.Unmarshal(data, &frame); err != nil {
 		return
 	}
+	h.touchPresence(userID)
 	channelID, err := uuid.Parse(frame.ChannelID)
 	if err != nil {
 		return

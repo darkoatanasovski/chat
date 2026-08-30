@@ -22,6 +22,25 @@ type User struct {
 	HomeRegion  string
 	AppID       int64 // tenant-isolation boundary — see internal/apps
 	CreatedAt   time.Time
+	// LastActiveAt is nil until this user's first tracked activity — see
+	// TouchActivity for what counts as activity and IsOnline for how it's
+	// turned into an online/offline boolean.
+	LastActiveAt *time.Time
+}
+
+// OnlineWindow is how recent LastActiveAt must be for IsOnline to report
+// true. Sized to comfortably survive one missed WebSocket ping cycle
+// (cmd/gateway pings every 30s and allows up to 60s before treating a
+// connection as dead — internal/realtime/websocket.go) without flapping a
+// still-connected user to "offline" between heartbeats.
+const OnlineWindow = 90 * time.Second
+
+// IsOnline derives online status the same way everywhere it's reported
+// (GET /channels/{id}/members, the dashboard's end-user list): recency of
+// LastActiveAt, never a separately tracked "connected" flag — see
+// TouchActivity's doc comment for what keeps it fresh.
+func IsOnline(lastActiveAt *time.Time) bool {
+	return lastActiveAt != nil && time.Since(*lastActiveAt) < OnlineWindow
 }
 
 type Repo struct {
@@ -43,12 +62,30 @@ func (r *Repo) Create(ctx context.Context, u User) error {
 	return nil
 }
 
+// TouchActivity marks userID active as of at. Called from a small,
+// deliberately bounded set of real activity signals — see cmd/api's
+// touchPresence call sites and cmd/gateway's WS connect/pong/disconnect
+// hooks — never from every authenticated request, so read-heavy traffic
+// never turns into write traffic here. The WHERE guard makes concurrent or
+// out-of-order calls safe: one carrying an older timestamp than what's
+// already stored is a no-op rather than clobbering a newer value.
+func (r *Repo) TouchActivity(ctx context.Context, userID uuid.UUID, at time.Time) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE users SET last_active_at = $2
+		WHERE user_id = $1 AND (last_active_at IS NULL OR last_active_at < $2)
+	`, userID, at)
+	if err != nil {
+		return fmt.Errorf("users: touch activity: %w", err)
+	}
+	return nil
+}
+
 func (r *Repo) Get(ctx context.Context, userID uuid.UUID) (User, error) {
 	var u User
 	err := r.pool.QueryRow(ctx, `
-		SELECT user_id, display_name, home_region, app_id, created_at
+		SELECT user_id, display_name, home_region, app_id, created_at, last_active_at
 		FROM users WHERE user_id = $1
-	`, userID).Scan(&u.UserID, &u.DisplayName, &u.HomeRegion, &u.AppID, &u.CreatedAt)
+	`, userID).Scan(&u.UserID, &u.DisplayName, &u.HomeRegion, &u.AppID, &u.CreatedAt, &u.LastActiveAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return User{}, fmt.Errorf("users: %w", ErrNotFound)
@@ -76,7 +113,7 @@ func (r *Repo) CountByApp(ctx context.Context, appID int64) (int, error) {
 // is an operator view over one app's users, not an end-user-facing feed.
 func (r *Repo) ListByApp(ctx context.Context, appID int64) ([]User, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT user_id, display_name, home_region, app_id, created_at
+		SELECT user_id, display_name, home_region, app_id, created_at, last_active_at
 		FROM users WHERE app_id = $1 ORDER BY created_at DESC
 	`, appID)
 	if err != nil {
@@ -87,7 +124,7 @@ func (r *Repo) ListByApp(ctx context.Context, appID int64) ([]User, error) {
 	var out []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.UserID, &u.DisplayName, &u.HomeRegion, &u.AppID, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.UserID, &u.DisplayName, &u.HomeRegion, &u.AppID, &u.CreatedAt, &u.LastActiveAt); err != nil {
 			return nil, fmt.Errorf("users: list by app: %w", err)
 		}
 		out = append(out, u)
@@ -174,4 +211,12 @@ func (s *Service) ListByApp(ctx context.Context, appID int64) ([]User, error) {
 
 func (s *Service) Get(ctx context.Context, userID uuid.UUID) (User, error) {
 	return s.repo.Get(ctx, userID)
+}
+
+// TouchActivity marks userID active right now — see Repo.TouchActivity.
+// Implements internal/realtime.PresenceToucher, so cmd/gateway can inject
+// this Service directly into the WS connect handler without that package
+// importing internal/users.
+func (s *Service) TouchActivity(ctx context.Context, userID uuid.UUID) error {
+	return s.repo.TouchActivity(ctx, userID, time.Now().UTC())
 }

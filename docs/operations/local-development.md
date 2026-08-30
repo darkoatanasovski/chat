@@ -40,6 +40,7 @@ export REGION=eu HTTP_ADDR=:8080 METRICS_ADDR=:9100 \
   SHARD_B_DSN="postgres://chat:chat@localhost:5435/chat?sslmode=disable" \
   VALKEY_ADDR=localhost:6379 KAFKA_BROKERS=localhost:9092 \
   AUTH_SECRET=dev-local-only-secret-change-me \
+  APP_SECRET_ENCRYPTION_KEY=ZGV2LWxvY2FsLW9ubHkta2V5LTMyLWJ5dGVzLW9rISE= \
   SHARDS_CONFIG=deploy/shards.yaml TIERS_CONFIG=deploy/tiers.yaml \
   PEER_API_EU_URL=http://localhost:8081 PEER_API_US_URL=http://localhost:8082 PEER_API_ASIA_URL=http://localhost:8083
 

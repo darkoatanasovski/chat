@@ -86,6 +86,7 @@ func (a *App) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to mark read")
 		return
 	}
+	a.touchPresence(identity.UserID)
 
 	writeJSON(w, http.StatusOK, readStateResponse{UserID: identity.UserID.String(), LastReadSequence: newSequence})
 }

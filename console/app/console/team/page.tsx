@@ -190,7 +190,7 @@ function InviteModal({ open, onClose, onCreated }: { open: boolean; onClose: () 
     }
   }
 
-  const inviteLink = invite ? `${window.location.origin}/invite/${invite.token}` : "";
+  const inviteLink = invite ? `${window.location.origin}/console/invite/${invite.token}` : "";
 
   return (
     <Modal

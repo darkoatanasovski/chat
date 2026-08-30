@@ -13,6 +13,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/darkoatanasovski/chat/internal/platform/secretbox"
 )
 
 // ErrCredentialNotFound covers "no such key", "revoked", and "secret
@@ -28,9 +30,9 @@ type Credential struct {
 	RevokedAt    *time.Time
 }
 
-// IssuedCredential is only ever returned once, at creation — the secret
-// itself is never stored (only its hash) and can never be retrieved again
-// afterward, the same guarantee every real API-key system makes.
+// IssuedCredential is what Create returns — the only response that ever
+// carries the secret directly, without a Reveal round-trip, since it's
+// already in hand right after minting it.
 type IssuedCredential struct {
 	Credential
 	Secret string
@@ -38,10 +40,15 @@ type IssuedCredential struct {
 
 type CredentialRepo struct {
 	pool *pgxpool.Pool
+	box  *secretbox.Box
 }
 
-func NewCredentialRepo(pool *pgxpool.Pool) *CredentialRepo {
-	return &CredentialRepo{pool: pool}
+// NewCredentialRepo takes a secretbox.Box so Create can store a recoverable
+// (encrypted, not just hashed) copy of every secret it mints — see Reveal
+// below and migrations/control/0008_app_credential_secret_encrypted.sql for
+// why both a hash and an encrypted copy are kept side by side.
+func NewCredentialRepo(pool *pgxpool.Pool, box *secretbox.Box) *CredentialRepo {
+	return &CredentialRepo{pool: pool, box: box}
 }
 
 func (r *CredentialRepo) Create(ctx context.Context, appID int64) (IssuedCredential, error) {
@@ -55,12 +62,17 @@ func (r *CredentialRepo) Create(ctx context.Context, appID int64) (IssuedCredent
 	}
 	credentialID := uuid.New()
 
+	encrypted, err := r.box.Seal(secret)
+	if err != nil {
+		return IssuedCredential{}, fmt.Errorf("apps: encrypt credential secret: %w", err)
+	}
+
 	var createdAt time.Time
 	err = r.pool.QueryRow(ctx, `
-		INSERT INTO app_credentials (credential_id, app_id, key, secret_hash)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO app_credentials (credential_id, app_id, key, secret_hash, secret_encrypted)
+		VALUES ($1, $2, $3, $4, $5)
 		RETURNING created_at
-	`, credentialID, appID, key, hashSecret(secret)).Scan(&createdAt)
+	`, credentialID, appID, key, hashSecret(secret), encrypted).Scan(&createdAt)
 	if err != nil {
 		return IssuedCredential{}, fmt.Errorf("apps: create credential: %w", err)
 	}
@@ -98,6 +110,60 @@ func (r *CredentialRepo) Verify(ctx context.Context, key, secret string) (int64,
 		return 0, ErrCredentialNotFound
 	}
 	return appID, nil
+}
+
+// IsActive is the live half of app-JWT verification (requireAppJWT): the
+// JWT's signature already proves api_key/app_id weren't tampered with since
+// POST /apps/token minted it, but only a fresh read here can prove the
+// credential hasn't been revoked since — same immediate-revocation
+// guarantee Verify already gives Basic auth, deliberately paid again here
+// (see the auth package's doc comment for why a signed token can't avoid
+// this the way an unsigned one could pretend to).
+func (r *CredentialRepo) IsActive(ctx context.Context, appID int64, key string) (bool, error) {
+	var revokedAt *time.Time
+	err := r.pool.QueryRow(ctx, `
+		SELECT revoked_at FROM app_credentials WHERE key = $1 AND app_id = $2
+	`, key, appID).Scan(&revokedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return false, nil
+		}
+		return false, fmt.Errorf("apps: check credential active: %w", err)
+	}
+	return revokedAt == nil, nil
+}
+
+// Reveal decrypts and returns a credential's secret on demand, scoped to
+// appID the same way Revoke is (ownership check baked into the WHERE
+// clause, not a separate lookup+compare) so one org can never reveal
+// another's credential by guessing a credential_id. Works for revoked
+// credentials too — revocation is about stopping future use, not about
+// hiding what the value was from the org that owns it.
+//
+// Returns ErrCredentialNotFound both when no such row exists AND when the
+// row predates secret_encrypted being populated (migrated-in-place rows
+// created before 0008_app_credential_secret_encrypted.sql only have a
+// hash) — the caller can't do anything useful with either case beyond
+// telling the user to rotate the credential.
+func (r *CredentialRepo) Reveal(ctx context.Context, appID int64, credentialID uuid.UUID) (string, error) {
+	var encrypted []byte
+	err := r.pool.QueryRow(ctx, `
+		SELECT secret_encrypted FROM app_credentials WHERE credential_id = $1 AND app_id = $2
+	`, credentialID, appID).Scan(&encrypted)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return "", ErrCredentialNotFound
+		}
+		return "", fmt.Errorf("apps: reveal credential: %w", err)
+	}
+	if len(encrypted) == 0 {
+		return "", ErrCredentialNotFound
+	}
+	secret, err := r.box.Open(encrypted)
+	if err != nil {
+		return "", fmt.Errorf("apps: decrypt credential secret: %w", err)
+	}
+	return secret, nil
 }
 
 // ListByApp never returns secrets or their hashes — only what's needed to

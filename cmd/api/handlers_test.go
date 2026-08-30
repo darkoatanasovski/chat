@@ -60,6 +60,20 @@ func basicAuthed(req *http.Request, key, secret string) *http.Request {
 	return req
 }
 
+// appAccessToken drives POST /apps/token end to end — the key+secret ->
+// short-lived Bearer JWT exchange every server-scoped call now goes
+// through instead of sending Basic auth directly (see requireAppJWT) —
+// and returns the token.
+func appAccessToken(t *testing.T, app *App, key, secret string) string {
+	t.Helper()
+	var resp appTokenResponse
+	rec := do(t, app, basicAuthed(jsonRequest("POST", "/apps/token", nil), key, secret), &resp)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("exchange app token: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	return resp.Token
+}
+
 // createTestOrg drives POST /organizations end to end and returns the new
 // org's id and org-admin bearer token.
 func createTestOrg(t *testing.T, app *App, tier string) (int64, string) {
@@ -118,8 +132,9 @@ func defaultAppCredentials(t *testing.T, app *App) (string, string) {
 func createTestUser(t *testing.T, app *App, displayName string) (uuid.UUID, string) {
 	t.Helper()
 	key, secret := defaultAppCredentials(t, app)
+	appToken := appAccessToken(t, app, key, secret)
 	var resp createUserResponse
-	rec := do(t, app, basicAuthed(jsonRequest("POST", "/users", createUserRequest{DisplayName: displayName, Region: "eu"}), key, secret), &resp)
+	rec := do(t, app, authed(jsonRequest("POST", "/users", createUserRequest{DisplayName: displayName, Region: "eu"}), appToken), &resp)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create test user %q: status %d, body %s", displayName, rec.Code, rec.Body.String())
 	}
@@ -145,8 +160,9 @@ func createTestChannel(t *testing.T, app *App, token, name string) channelRespon
 func TestHandleCreateUser_Valid(t *testing.T) {
 	app := testApp(t)
 	key, secret := defaultAppCredentials(t, app)
+	appToken := appAccessToken(t, app, key, secret)
 	var resp createUserResponse
-	rec := do(t, app, basicAuthed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "alice", Region: "eu"}), key, secret), &resp)
+	rec := do(t, app, authed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "alice", Region: "eu"}), appToken), &resp)
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
@@ -171,8 +187,9 @@ func TestHandleCreateUser_TierIsResolvedFromOwningOrg(t *testing.T) {
 	for _, tier := range []string{"FREE", "PRO", "BUSINESS", "ENTERPRISE"} {
 		t.Run(tier, func(t *testing.T) {
 			_, key, secret := createOrgAndApp(t, app, tier)
+			appToken := appAccessToken(t, app, key, secret)
 			var resp createUserResponse
-			rec := do(t, app, basicAuthed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "tier-" + tier, Region: "eu"}), key, secret), &resp)
+			rec := do(t, app, authed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "tier-" + tier, Region: "eu"}), appToken), &resp)
 			if rec.Code != http.StatusCreated {
 				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 			}
@@ -186,6 +203,7 @@ func TestHandleCreateUser_TierIsResolvedFromOwningOrg(t *testing.T) {
 func TestHandleCreateUser_Validation(t *testing.T) {
 	app := testApp(t)
 	key, secret := defaultAppCredentials(t, app)
+	appToken := appAccessToken(t, app, key, secret)
 	cases := []struct {
 		name string
 		req  createUserRequest
@@ -197,7 +215,7 @@ func TestHandleCreateUser_Validation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := do(t, app, basicAuthed(jsonRequest("POST", "/users", tc.req), key, secret), nil)
+			rec := do(t, app, authed(jsonRequest("POST", "/users", tc.req), appToken), nil)
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
 			}
@@ -208,27 +226,53 @@ func TestHandleCreateUser_Validation(t *testing.T) {
 func TestHandleCreateUser_RejectsUnknownFields(t *testing.T) {
 	app := testApp(t)
 	key, secret := defaultAppCredentials(t, app)
+	appToken := appAccessToken(t, app, key, secret)
 	req := httptest.NewRequest("POST", "/users", bytes.NewReader([]byte(`{"display_name":"carol","region":"eu","is_admin":true}`)))
 	req.Header.Set("Content-Type", "application/json")
-	rec := do(t, app, basicAuthed(req, key, secret), nil)
+	rec := do(t, app, authed(req, appToken), nil)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected unknown fields to be rejected, status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 
-// --- POST /users app-credential boundary ---
+// --- POST /apps/token and POST /users auth boundaries ---
+
+// TestHandleCreateAppToken_RequiresAppCredentials covers the boundary that
+// used to sit directly on POST /users: since requireAppJWT moved there
+// instead, this is now the one endpoint that still checks key+secret.
+func TestHandleCreateAppToken_RequiresAppCredentials(t *testing.T) {
+	app := testApp(t)
+
+	rec := do(t, app, jsonRequest("POST", "/apps/token", nil), nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing credentials: status = %d, want 401", rec.Code)
+	}
+
+	rec = do(t, app, basicAuthed(jsonRequest("POST", "/apps/token", nil), "key_bogus", "secret_bogus"), nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid credentials: status = %d, want 401", rec.Code)
+	}
+}
 
 func TestHandleCreateUser_RequiresAppCredentials(t *testing.T) {
 	app := testApp(t)
 
 	rec := do(t, app, jsonRequest("POST", "/users", createUserRequest{DisplayName: "no-creds", Region: "eu"}), nil)
 	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("missing credentials: status = %d, want 401", rec.Code)
+		t.Fatalf("missing token: status = %d, want 401", rec.Code)
 	}
 
-	rec = do(t, app, basicAuthed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "bad-creds", Region: "eu"}), "key_bogus", "secret_bogus"), nil)
+	rec = do(t, app, authed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "bad-token", Region: "eu"}), "not-a-real-token"), nil)
 	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("invalid credentials: status = %d, want 401", rec.Code)
+		t.Fatalf("invalid token: status = %d, want 401", rec.Code)
+	}
+
+	// Basic auth (the old scheme) must no longer work directly against
+	// /users — it only mints a token now, at POST /apps/token.
+	key, secret := defaultAppCredentials(t, app)
+	rec = do(t, app, basicAuthed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "basic-not-accepted", Region: "eu"}), key, secret), nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("basic auth directly on /users: status = %d, want 401", rec.Code)
 	}
 }
 
@@ -240,8 +284,9 @@ func TestHandleCreateUser_RevokedCredentialRejectedImmediately(t *testing.T) {
 	app := testApp(t)
 	orgID, orgToken := createTestOrg(t, app, "FREE")
 	appID, key, secret := createTestApp(t, app, orgID, orgToken)
+	appToken := appAccessToken(t, app, key, secret)
 
-	rec := do(t, app, basicAuthed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "before-revoke", Region: "eu"}), key, secret), nil)
+	rec := do(t, app, authed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "before-revoke", Region: "eu"}), appToken), nil)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("before revoke: status = %d, want 201, body = %s", rec.Code, rec.Body.String())
 	}
@@ -257,9 +302,19 @@ func TestHandleCreateUser_RevokedCredentialRejectedImmediately(t *testing.T) {
 		t.Fatalf("revoke credential: status = %d, want 204, body = %s", rec.Code, rec.Body.String())
 	}
 
-	rec = do(t, app, basicAuthed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "after-revoke", Region: "eu"}), key, secret), nil)
+	// The already-issued, still-unexpired app token must stop working
+	// immediately — this is the whole point of requireAppJWT's live
+	// IsActive check (a bare signed JWT couldn't give this guarantee on
+	// its own; see internal/apps.CredentialRepo.IsActive).
+	rec = do(t, app, authed(jsonRequest("POST", "/users", createUserRequest{DisplayName: "after-revoke-cached-token", Region: "eu"}), appToken), nil)
 	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("after revoke: status = %d, want 401, body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("after revoke, cached app token: status = %d, want 401, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// And the revoked key+secret can no longer mint a fresh token either.
+	rec = do(t, app, basicAuthed(jsonRequest("POST", "/apps/token", nil), key, secret), nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("after revoke, re-exchange: status = %d, want 401, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

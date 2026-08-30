@@ -34,6 +34,8 @@ type Metrics struct {
 	QuotaRejectionsTotal     *prometheus.CounterVec
 
 	CrossRegionLatency *prometheus.HistogramVec
+
+	MessagesExpiredTotal prometheus.Counter
 }
 
 func New(namespace string) *Metrics {
@@ -96,6 +98,10 @@ func New(namespace string) *Metrics {
 			Namespace: namespace, Name: "cross_region_latency_seconds",
 			Buckets: prometheus.DefBuckets,
 		}, []string{"from_region", "to_region"}),
+
+		MessagesExpiredTotal: promauto.NewCounter(prometheus.CounterOpts{
+			Namespace: namespace, Name: "messages_expired_total",
+		}),
 	}
 }
 

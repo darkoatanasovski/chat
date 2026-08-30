@@ -17,13 +17,16 @@ import (
 // DeliveryFrame is the JSON payload pushed to WebSocket clients for
 // message.created.
 type DeliveryFrame struct {
-	Type      string    `json:"type"`
-	ChannelID uuid.UUID `json:"channel_id"`
-	MessageID uuid.UUID `json:"message_id"`
-	Sequence  int64     `json:"sequence"`
-	SenderID  uuid.UUID `json:"sender_id"`
-	Body      string    `json:"body"`
-	CreatedAt string    `json:"created_at"`
+	Type             string     `json:"type"`
+	ChannelID        uuid.UUID  `json:"channel_id"`
+	MessageID        uuid.UUID  `json:"message_id"`
+	Sequence         int64      `json:"sequence"`
+	SenderID         uuid.UUID  `json:"sender_id"`
+	Body             string     `json:"body"`
+	ParentID         *uuid.UUID `json:"parent_id,omitempty"`
+	ParentReplyCount *int64     `json:"parent_reply_count,omitempty"`
+	PollID           *uuid.UUID `json:"poll_id,omitempty"`
+	CreatedAt        string     `json:"created_at"`
 }
 
 // ReactionDeliveryFrame is the JSON payload pushed to WebSocket clients for
@@ -41,6 +44,19 @@ type ReactionDeliveryFrame struct {
 	LatestReactions []events.ReactionSummary `json:"latest_reactions"`
 }
 
+// MessageEditDeliveryFrame is the JSON payload pushed to WebSocket clients
+// for message.edited — a message's fresh body/edited_at, same "carries the
+// full current state" shape as ReactionDeliveryFrame, so the client patches
+// its local copy without a follow-up GET.
+type MessageEditDeliveryFrame struct {
+	Type      string    `json:"type"`
+	ChannelID uuid.UUID `json:"channel_id"`
+	MessageID uuid.UUID `json:"message_id"`
+	SenderID  uuid.UUID `json:"sender_id"`
+	Body      string    `json:"body"`
+	EditedAt  string    `json:"edited_at"`
+}
+
 // ReadDeliveryFrame is the JSON payload pushed to WebSocket clients for
 // read.updated — one user's fresh watermark; the client updates its local
 // per-member read-state map and recomputes "seen by" for its own messages.
@@ -49,6 +65,33 @@ type ReadDeliveryFrame struct {
 	ChannelID        uuid.UUID `json:"channel_id"`
 	UserID           uuid.UUID `json:"user_id"`
 	LastReadSequence int64     `json:"last_read_sequence"`
+}
+
+// PollVoteDeliveryFrame is the JSON payload pushed to WebSocket clients for
+// poll.vote_updated — a poll's fresh per-option tallies, same "carries the
+// full current state" shape as ReactionDeliveryFrame, so the client patches
+// its local copy of the poll without a follow-up GET.
+type PollVoteDeliveryFrame struct {
+	Type        string                  `json:"type"`
+	ChannelID   uuid.UUID               `json:"channel_id"`
+	PollID      uuid.UUID               `json:"poll_id"`
+	ActorID     uuid.UUID               `json:"actor_id"`
+	Options     []events.PollOptionTally `json:"options"`
+	TotalVoters int                     `json:"total_voters"`
+}
+
+// MessagePinDeliveryFrame is the JSON payload pushed to WebSocket clients
+// for message.pin_updated — a message's fresh pinned state, same "carries
+// the full current state" shape as ReactionDeliveryFrame, so the client
+// patches its local copy of the message without a follow-up GET.
+type MessagePinDeliveryFrame struct {
+	Type      string     `json:"type"`
+	ChannelID uuid.UUID  `json:"channel_id"`
+	MessageID uuid.UUID  `json:"message_id"`
+	ActorID   uuid.UUID  `json:"actor_id"`
+	Action    string     `json:"action"`
+	PinnedAt  *time.Time `json:"pinned_at"`
+	PinnedBy  *uuid.UUID `json:"pinned_by"`
 }
 
 // MessageSource is the minimal *kafkago.Reader surface Fanout.Run needs —
@@ -243,6 +286,12 @@ func (f *Fanout) handle(ctx context.Context, msg kafkago.Message) error {
 		return f.handleReactionUpdated(ctx, msg)
 	case events.TopicReadUpdated:
 		return f.handleReadUpdated(ctx, msg)
+	case events.TopicPollVoteUpdated:
+		return f.handlePollVoteUpdated(ctx, msg)
+	case events.TopicMessageEdited:
+		return f.handleMessageEdited(ctx, msg)
+	case events.TopicMessagePinUpdated:
+		return f.handleMessagePinUpdated(ctx, msg)
 	default:
 		// Empty/unrecognized Topic falls through to message.created too —
 		// tests construct kafkago.Message without setting Topic, and this
@@ -267,13 +316,16 @@ func (f *Fanout) handleMessageCreated(ctx context.Context, msg kafkago.Message) 
 	}
 
 	frame, err := json.Marshal(DeliveryFrame{
-		Type:      "message.created",
-		ChannelID: payload.ChannelID,
-		MessageID: payload.MessageID,
-		Sequence:  payload.Sequence,
-		SenderID:  payload.SenderID,
-		Body:      payload.Body,
-		CreatedAt: payload.CreatedAt.Format("2006-01-02T15:04:05.000Z07:00"),
+		Type:             "message.created",
+		ChannelID:        payload.ChannelID,
+		MessageID:        payload.MessageID,
+		Sequence:         payload.Sequence,
+		SenderID:         payload.SenderID,
+		Body:             payload.Body,
+		ParentID:         payload.ParentID,
+		ParentReplyCount: payload.ParentReplyCount,
+		PollID:           payload.PollID,
+		CreatedAt:        payload.CreatedAt.Format("2006-01-02T15:04:05.000Z07:00"),
 	})
 	if err != nil {
 		return fmt.Errorf("fanout: marshal delivery frame: %w", err)
@@ -315,6 +367,94 @@ func (f *Fanout) handleReactionUpdated(ctx context.Context, msg kafkago.Message)
 	})
 	if err != nil {
 		return fmt.Errorf("fanout: marshal reaction delivery frame: %w", err)
+	}
+
+	return f.delivery.ToChannelMembers(ctx, payload.ChannelID, frame, payload.ActorID, uuid.Nil)
+}
+
+func (f *Fanout) handlePollVoteUpdated(ctx context.Context, msg kafkago.Message) error {
+	var payload events.PollVoteUpdatedPayload
+	if err := json.Unmarshal(msg.Value, &payload); err != nil {
+		return fmt.Errorf("fanout: unmarshal payload: %w", err)
+	}
+
+	seen, err := f.dedup.SeenBefore(ctx, payload.EventID.String())
+	if err != nil {
+		return err
+	}
+	if seen {
+		return nil
+	}
+
+	frame, err := json.Marshal(PollVoteDeliveryFrame{
+		Type:        "poll.vote_updated",
+		ChannelID:   payload.ChannelID,
+		PollID:      payload.PollID,
+		ActorID:     payload.ActorID,
+		Options:     payload.Options,
+		TotalVoters: payload.TotalVoters,
+	})
+	if err != nil {
+		return fmt.Errorf("fanout: marshal poll vote delivery frame: %w", err)
+	}
+
+	return f.delivery.ToChannelMembers(ctx, payload.ChannelID, frame, payload.ActorID, uuid.Nil)
+}
+
+func (f *Fanout) handleMessageEdited(ctx context.Context, msg kafkago.Message) error {
+	var payload events.MessageEditedPayload
+	if err := json.Unmarshal(msg.Value, &payload); err != nil {
+		return fmt.Errorf("fanout: unmarshal payload: %w", err)
+	}
+
+	seen, err := f.dedup.SeenBefore(ctx, payload.EventID.String())
+	if err != nil {
+		return err
+	}
+	if seen {
+		return nil
+	}
+
+	frame, err := json.Marshal(MessageEditDeliveryFrame{
+		Type:      "message.edited",
+		ChannelID: payload.ChannelID,
+		MessageID: payload.MessageID,
+		SenderID:  payload.SenderID,
+		Body:      payload.Body,
+		EditedAt:  payload.EditedAt.Format("2006-01-02T15:04:05.000Z07:00"),
+	})
+	if err != nil {
+		return fmt.Errorf("fanout: marshal message edit delivery frame: %w", err)
+	}
+
+	return f.delivery.ToChannelMembers(ctx, payload.ChannelID, frame, payload.SenderID, uuid.Nil)
+}
+
+func (f *Fanout) handleMessagePinUpdated(ctx context.Context, msg kafkago.Message) error {
+	var payload events.MessagePinUpdatedPayload
+	if err := json.Unmarshal(msg.Value, &payload); err != nil {
+		return fmt.Errorf("fanout: unmarshal payload: %w", err)
+	}
+
+	seen, err := f.dedup.SeenBefore(ctx, payload.EventID.String())
+	if err != nil {
+		return err
+	}
+	if seen {
+		return nil
+	}
+
+	frame, err := json.Marshal(MessagePinDeliveryFrame{
+		Type:      "message.pin_updated",
+		ChannelID: payload.ChannelID,
+		MessageID: payload.MessageID,
+		ActorID:   payload.ActorID,
+		Action:    payload.Action,
+		PinnedAt:  payload.PinnedAt,
+		PinnedBy:  payload.PinnedBy,
+	})
+	if err != nil {
+		return fmt.Errorf("fanout: marshal message pin delivery frame: %w", err)
 	}
 
 	return f.delivery.ToChannelMembers(ctx, payload.ChannelID, frame, payload.ActorID, uuid.Nil)
