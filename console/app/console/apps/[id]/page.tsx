@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
@@ -26,41 +26,29 @@ import {
   Vote,
   X,
 } from "lucide-react";
+import { API_BASE, revealCredential, ApiError } from "@/lib/api";
 import {
-  addChannelMember,
-  API_BASE,
-  createCredential,
-  createDashboardChannel,
-  createEndUser,
-  getAppMessagesUsage,
-  getAppsMessagesDaily,
-  listApps,
-  listAppDashboardPolls,
-  listChannelMembers,
-  listCredentials,
-  listDashboardBlocks,
-  listDashboardChannels,
-  listEndUsers,
-  removeChannelMember,
-  revealCredential,
-  revokeCredential,
-  updateApp,
-  ApiError,
-} from "@/lib/api";
-import type {
-  AppSummary,
-  ChannelCapabilities,
-  ChannelMember,
-  Credential,
-  DashboardBlock,
-  DashboardChannel,
-  DashboardPoll,
-  EndUser,
-  MessagesUsage,
-  UpdateAppRequest,
-} from "@/lib/types";
+  useAddChannelMemberMutation,
+  useAppDashboardPollsQuery,
+  useAppMessagesUsageQuery,
+  useAppQuery,
+  useAppsMessagesDailyQuery,
+  useChannelMembersQuery,
+  useCreateCredentialMutation,
+  useCreateDashboardChannelMutation,
+  useCreateEndUserMutation,
+  useCredentialsQuery,
+  useDashboardBlocksQuery,
+  useDashboardChannelsQuery,
+  useEndUsersQuery,
+  useRemoveChannelMemberMutation,
+  useRevokeCredentialMutation,
+  useUpdateAppMutation,
+} from "@/lib/queries";
+import type { AppSummary, ChannelCapabilities, Credential, DashboardChannel, DashboardPoll, EndUser, MessagesUsage, UpdateAppRequest } from "@/lib/types";
 import { ConsoleShell, useSession } from "@/components/shell";
 import { useToast } from "@/components/toast";
+import { CAPABILITY_GROUPS, KNOWN_COMMANDS } from "@/lib/capabilities";
 import {
   AnimatedNumber,
   Avatar,
@@ -73,6 +61,7 @@ import {
   Modal,
   Panel,
   Select,
+  SettingHighlight,
   Skeleton,
   Sparkline,
   StatusDot,
@@ -101,16 +90,31 @@ type TabID = (typeof TABS)[number]["id"];
 function AppDetailView() {
   const { session } = useSession();
   const params = useParams<{ id: string }>();
+  const searchParams = useSearchParams();
   const appId = Number(params.id);
 
-  const [app, setApp] = useState<AppSummary | null>(null);
+  // Same ["apps", orgId] cache the Apps grid and global search share — if
+  // this app was opened from either place (the normal path), this is a
+  // cache hit and the header renders with a name immediately instead of a
+  // skeleton.
+  const { data: app } = useAppQuery(session.token, session.org.org_id, appId);
   const [tab, setTab] = useState<TabID>("dashboard");
+  // Set (and re-set) from the URL's `?setting=` param — arrives via the
+  // global search palette (components/global-search.tsx) or a direct link.
+  // Read back out by SettingHighlight-wrapped rows below to scroll to and
+  // briefly flash the matching one.
+  const [highlightKey, setHighlightKey] = useState<string | null>(null);
 
+  // Runs on every searchParams change, not just mount, so clicking a search
+  // result while already on this app's page (same route, new query string)
+  // still switches tabs and re-triggers the highlight.
   useEffect(() => {
-    listApps(session.token, session.org.org_id)
-      .then((apps) => setApp(apps.find((a) => a.app_id === appId) ?? null))
-      .catch(() => {});
-  }, [session.token, session.org.org_id, appId]);
+    const tabParam = searchParams.get("tab");
+    if (tabParam && TABS.some((t) => t.id === tabParam)) {
+      setTab(tabParam as TabID);
+    }
+    setHighlightKey(searchParams.get("setting"));
+  }, [searchParams]);
 
   return (
     <div>
@@ -146,12 +150,14 @@ function AppDetailView() {
         ))}
       </div>
 
-      {tab === "dashboard" && <DashboardTab appId={appId} />}
+      {tab === "dashboard" && <DashboardTab appId={appId} highlightKey={highlightKey} />}
       {tab === "credentials" && <CredentialsTab appId={appId} />}
       {tab === "users" && <EndUsersTab appId={appId} />}
       {tab === "channels" && <ChannelsTab appId={appId} />}
       {tab === "blocks" && <BlocksTab appId={appId} />}
-      {tab === "settings" && <SettingsTab appId={appId} app={app} onUpdated={setApp} />}
+      {tab === "settings" && (
+        <SettingsTab appId={appId} app={app ?? null} highlightKey={highlightKey} />
+      )}
     </div>
   );
 }
@@ -370,16 +376,16 @@ function SdkSetupPanel({ appId }: { appId: number }) {
     if (stored) setLanguage(stored);
   }, [appId]);
 
+  // "At least one request from the client" — reuse the same per-app
+  // message totals the Apps grid and Overview page already fetch (and, by
+  // the time someone's looking at an app's own page, have usually already
+  // cached).
+  const { data: dailyRes } = useAppsMessagesDailyQuery(session.token);
   useEffect(() => {
-    // "At least one request from the client" — reuse the same per-app
-    // message totals the Apps grid and Overview page already fetch.
-    getAppsMessagesDaily(session.token)
-      .then((res) => {
-        const total = res.apps.find((a) => a.app_id === appId)?.total ?? 0;
-        if (!userToggledRef.current) setCollapsed(total > 0);
-      })
-      .catch(() => {});
-  }, [session.token, appId]);
+    if (!dailyRes) return;
+    const total = dailyRes.apps.find((a) => a.app_id === appId)?.total ?? 0;
+    if (!userToggledRef.current) setCollapsed(total > 0);
+  }, [dailyRes, appId]);
 
   function chooseLanguage(lang: SdkLanguage) {
     setLanguage(lang);
@@ -446,42 +452,29 @@ function SdkSetupPanel({ appId }: { appId: number }) {
 // Matches the backend's dashboardDailyWindowDays (cmd/api/handlers_dashboard.go).
 const DAILY_WINDOW = 7;
 
-function DashboardTab({ appId }: { appId: number }) {
+function DashboardTab({ appId, highlightKey }: { appId: number; highlightKey?: string | null }) {
   const { session } = useSession();
-  const [usage, setUsage] = useState<MessagesUsage | null>(null);
-  const [daily, setDaily] = useState<number[] | null>(null);
-  const [userCount, setUserCount] = useState<number | null>(null);
-  const [channelCount, setChannelCount] = useState<number | null>(null);
-  const [blockedCount, setBlockedCount] = useState<number | null>(null);
-  const [polls, setPolls] = useState<DashboardPoll[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    getAppMessagesUsage(session.token, appId)
-      .then(setUsage)
-      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
-    // getAppsMessagesDaily returns every app's breakdown in one call (it
-    // backs the Apps grid's per-app sparklines) — pick out just this app's
-    // series rather than adding a redundant single-app daily endpoint.
-    getAppsMessagesDaily(session.token)
-      .then((res) => {
-        const mine = res.apps.find((a) => a.app_id === appId);
-        setDaily(mine ? mine.daily : new Array(res.days.length).fill(0));
-      })
-      .catch(() => {});
-    listEndUsers(session.token, appId)
-      .then((users) => setUserCount(users.length))
-      .catch(() => {});
-    listDashboardChannels(session.token, appId)
-      .then((channels) => setChannelCount(channels.length))
-      .catch(() => {});
-    listDashboardBlocks(session.token, appId)
-      .then((blocks) => setBlockedCount(blocks.length))
-      .catch(() => {});
-    listAppDashboardPolls(session.token, appId)
-      .then(setPolls)
-      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
-  }, [session.token, appId]);
+  const usageQuery = useAppMessagesUsageQuery(session.token, appId);
+  const usage = usageQuery.data ?? null;
+  const { data: dailyRes } = useAppsMessagesDailyQuery(session.token);
+  // getAppsMessagesDaily returns every app's breakdown in one call (it
+  // backs the Apps grid's per-app sparklines) — pick out just this app's
+  // series rather than adding a redundant single-app daily endpoint.
+  const daily = dailyRes
+    ? (dailyRes.apps.find((a) => a.app_id === appId)?.daily ?? new Array(dailyRes.days.length).fill(0))
+    : null;
+  const { data: users } = useEndUsersQuery(session.token, appId);
+  const userCount = users?.length ?? null;
+  const { data: channels } = useDashboardChannelsQuery(session.token, appId);
+  const channelCount = channels?.length ?? null;
+  const { data: blocks } = useDashboardBlocksQuery(session.token, appId);
+  const blockedCount = blocks?.length ?? null;
+  const pollsQuery = useAppDashboardPollsQuery(session.token, appId);
+  const polls = pollsQuery.data ?? null;
+
+  const queryError = usageQuery.error ?? pollsQuery.error;
+  const error = queryError ? (queryError instanceof ApiError ? queryError.message : String(queryError)) : null;
 
   return (
     <div>
@@ -501,30 +494,32 @@ function DashboardTab({ appId }: { appId: number }) {
         <AppMessagesCard usage={usage} daily={daily} />
       </div>
 
-      <Panel animate={false}>
-        <h2 className="mb-5 text-base font-semibold text-text">Polls</h2>
-        {polls === null && !error && (
-          <div className="flex flex-col gap-4">
-            <Skeleton className="h-32" />
-            <Skeleton className="h-32" />
-          </div>
-        )}
-        {polls?.length === 0 && (
-          <div className="flex flex-col items-center gap-2 py-8 text-center">
-            <span className="grid h-10 w-10 place-items-center rounded-full bg-surface-2 text-text-faint">
-              <Vote className="h-4.5 w-4.5" />
-            </span>
-            <p className="text-[15px] text-text-muted">No polls yet — they&apos;ll show up here once an end-user creates one.</p>
-          </div>
-        )}
-        {polls && polls.length > 0 && (
-          <div className="flex flex-col gap-4">
-            {polls.map((p, i) => (
-              <PollCard key={p.poll_id} poll={p} delay={Math.min(i * 40, 240)} />
-            ))}
-          </div>
-        )}
-      </Panel>
+      <SettingHighlight id="polls" active={highlightKey === "polls"}>
+        <Panel animate={false}>
+          <h2 className="mb-5 text-base font-semibold text-text">Polls</h2>
+          {polls === null && !error && (
+            <div className="flex flex-col gap-4">
+              <Skeleton className="h-32" />
+              <Skeleton className="h-32" />
+            </div>
+          )}
+          {polls?.length === 0 && (
+            <div className="flex flex-col items-center gap-2 py-8 text-center">
+              <span className="grid h-10 w-10 place-items-center rounded-full bg-surface-2 text-text-faint">
+                <Vote className="h-4.5 w-4.5" />
+              </span>
+              <p className="text-[15px] text-text-muted">No polls yet — they&apos;ll show up here once an end-user creates one.</p>
+            </div>
+          )}
+          {polls && polls.length > 0 && (
+            <div className="flex flex-col gap-4">
+              {polls.map((p, i) => (
+                <PollCard key={p.poll_id} poll={p} delay={Math.min(i * 40, 240)} />
+              ))}
+            </div>
+          )}
+        </Panel>
+      </SettingHighlight>
     </div>
   );
 }
@@ -712,8 +707,20 @@ function PollCard({ poll, delay }: { poll: DashboardPoll; delay: number }) {
 function CredentialsTab({ appId }: { appId: number }) {
   const { session } = useSession();
   const toast = useToast();
-  const [credentials, setCredentials] = useState<Credential[] | null>(null);
+  const credentialsQuery = useCredentialsQuery(session.token, appId);
+  const credentials = credentialsQuery.data ?? null;
+  const createCredentialMutation = useCreateCredentialMutation(session.token, appId);
+  const revokeCredentialMutation = useRevokeCredentialMutation(session.token, appId);
   const [error, setError] = useState<string | null>(null);
+
+  // The list fetch's own error surfaces here too (not just create/revoke
+  // failures, which set `error` directly) — otherwise a failed initial
+  // load shows skeletons forever with no explanation.
+  useEffect(() => {
+    if (credentialsQuery.error) {
+      setError(credentialsQuery.error instanceof ApiError ? credentialsQuery.error.message : String(credentialsQuery.error));
+    }
+  }, [credentialsQuery.error]);
   const [newCredential, setNewCredential] = useState<Credential | null>(null);
   const [revoking, setRevoking] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -737,21 +744,12 @@ function CredentialsTab({ appId }: { appId: number }) {
     writeStoredLanguage(appId, lang);
   }
 
-  function refresh() {
-    listCredentials(session.token, appId)
-      .then(setCredentials)
-      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
-  }
-
-  useEffect(refresh, [session.token, appId]);
-
   async function handleCreateCredential() {
     setError(null);
     try {
-      const cred = await createCredential(session.token, appId);
+      const cred = await createCredentialMutation.mutateAsync();
       setNewCredential(cred);
       setSecretRevealed(false);
-      refresh();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
     }
@@ -760,9 +758,8 @@ function CredentialsTab({ appId }: { appId: number }) {
   async function handleRevoke(credentialId: string) {
     setRevoking(credentialId);
     try {
-      await revokeCredential(session.token, appId, credentialId);
+      await revokeCredentialMutation.mutateAsync(credentialId);
       toast("success", "Credential revoked");
-      refresh();
     } catch (err) {
       toast("error", err instanceof ApiError ? err.message : String(err));
     } finally {
@@ -971,17 +968,10 @@ function CredentialsTab({ appId }: { appId: number }) {
 function EndUsersTab({ appId }: { appId: number }) {
   const { session } = useSession();
   const toast = useToast();
-  const [users, setUsers] = useState<EndUser[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const usersQuery = useEndUsersQuery(session.token, appId);
+  const users = usersQuery.data ?? null;
+  const error = usersQuery.error ? (usersQuery.error instanceof ApiError ? usersQuery.error.message : String(usersQuery.error)) : null;
   const [createOpen, setCreateOpen] = useState(false);
-
-  function refresh() {
-    listEndUsers(session.token, appId)
-      .then(setUsers)
-      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
-  }
-
-  useEffect(refresh, [session.token, appId]);
 
   return (
     <div>
@@ -1036,10 +1026,7 @@ function EndUsersTab({ appId }: { appId: number }) {
         appId={appId}
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        onCreated={() => {
-          refresh();
-          toast("success", "End-user added");
-        }}
+        onCreated={() => toast("success", "End-user added")}
       />
     </div>
   );
@@ -1057,9 +1044,9 @@ function CreateEndUserModal({
   onCreated: () => void;
 }) {
   const { session } = useSession();
+  const createEndUserMutation = useCreateEndUserMutation(session.token, appId);
   const [displayName, setDisplayName] = useState("");
   const [region, setRegion] = useState("eu");
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   function reset() {
@@ -1071,16 +1058,13 @@ function CreateEndUserModal({
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
-    setLoading(true);
     try {
-      await createEndUser(session.token, appId, displayName.trim(), region);
+      await createEndUserMutation.mutateAsync({ displayName: displayName.trim(), region });
       onCreated();
       onClose();
       setTimeout(reset, 200);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
-    } finally {
-      setLoading(false);
     }
   }
 
@@ -1108,7 +1092,7 @@ function CreateEndUserModal({
             <option value="asia">Asia Pacific</option>
           </Select>
         </div>
-        <Button type="submit" variant="primary" loading={loading} className="justify-center">
+        <Button type="submit" variant="primary" loading={createEndUserMutation.isPending} className="justify-center">
           Add end-user
         </Button>
         {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -1122,22 +1106,17 @@ function CreateEndUserModal({
 function ChannelsTab({ appId }: { appId: number }) {
   const { session } = useSession();
   const toast = useToast();
-  const [channels, setChannels] = useState<DashboardChannel[] | null>(null);
-  const [users, setUsers] = useState<EndUser[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const channelsQuery = useDashboardChannelsQuery(session.token, appId);
+  const channels = channelsQuery.data ?? null;
+  const error = channelsQuery.error
+    ? channelsQuery.error instanceof ApiError
+      ? channelsQuery.error.message
+      : String(channelsQuery.error)
+    : null;
+  const { data: usersData } = useEndUsersQuery(session.token, appId);
+  const users = usersData ?? null;
   const [createOpen, setCreateOpen] = useState(false);
   const [activeChannel, setActiveChannel] = useState<DashboardChannel | null>(null);
-
-  function refresh() {
-    listDashboardChannels(session.token, appId)
-      .then(setChannels)
-      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
-    listEndUsers(session.token, appId)
-      .then(setUsers)
-      .catch(() => {});
-  }
-
-  useEffect(refresh, [session.token, appId]);
 
   return (
     <div>
@@ -1207,18 +1186,10 @@ function ChannelsTab({ appId }: { appId: number }) {
         users={users ?? []}
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        onCreated={() => {
-          refresh();
-          toast("success", "Channel created");
-        }}
+        onCreated={() => toast("success", "Channel created")}
       />
 
-      <ManageMembersModal
-        channel={activeChannel}
-        appUsers={users ?? []}
-        onClose={() => setActiveChannel(null)}
-        onChanged={refresh}
-      />
+      <ManageMembersModal appId={appId} channel={activeChannel} appUsers={users ?? []} onClose={() => setActiveChannel(null)} />
     </div>
   );
 }
@@ -1237,9 +1208,9 @@ function CreateChannelModal({
   onCreated: () => void;
 }) {
   const { session } = useSession();
+  const createChannelMutation = useCreateDashboardChannelMutation(session.token, appId);
   const [name, setName] = useState("");
   const [creatorId, setCreatorId] = useState("");
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   function reset() {
@@ -1251,16 +1222,13 @@ function CreateChannelModal({
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
-    setLoading(true);
     try {
-      await createDashboardChannel(session.token, appId, name.trim(), creatorId || users[0]?.user_id || "");
+      await createChannelMutation.mutateAsync({ name: name.trim(), creatorUserId: creatorId || users[0]?.user_id || "" });
       onCreated();
       onClose();
       setTimeout(reset, 200);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
-    } finally {
-      setLoading(false);
     }
   }
 
@@ -1290,7 +1258,7 @@ function CreateChannelModal({
             ))}
           </Select>
         </div>
-        <Button type="submit" variant="primary" loading={loading} className="justify-center">
+        <Button type="submit" variant="primary" loading={createChannelMutation.isPending} className="justify-center">
           Create channel
         </Button>
         {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -1300,37 +1268,33 @@ function CreateChannelModal({
 }
 
 function ManageMembersModal({
+  appId,
   channel,
   appUsers,
   onClose,
-  onChanged,
 }: {
+  appId: number;
   channel: DashboardChannel | null;
   appUsers: EndUser[];
   onClose: () => void;
-  onChanged: () => void;
 }) {
   const { session } = useSession();
   const toast = useToast();
-  const [members, setMembers] = useState<ChannelMember[] | null>(null);
+  // Keyed by channelId, so reopening this modal for a channel already
+  // visited this session is a cache hit — switching to a different
+  // channel is a fresh (enabled-gated) fetch, same as before.
+  const membersQuery = useChannelMembersQuery(session.token, channel?.channel_id);
+  const members = membersQuery.data ?? null;
+  const addMemberMutation = useAddChannelMemberMutation(session.token, appId);
+  const removeMemberMutation = useRemoveChannelMemberMutation(session.token, appId);
   const [addUserId, setAddUserId] = useState("");
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  function refresh() {
-    if (!channel) return;
-    listChannelMembers(session.token, channel.channel_id)
-      .then(setMembers)
-      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
-  }
-
   useEffect(() => {
-    setMembers(null);
     setError(null);
     setAddUserId("");
-    refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channel?.channel_id]);
 
   if (!channel) return null;
@@ -1343,10 +1307,8 @@ function ManageMembersModal({
     setAdding(true);
     setError(null);
     try {
-      await addChannelMember(session.token, channel.channel_id, addUserId);
+      await addMemberMutation.mutateAsync({ channelId: channel.channel_id, userId: addUserId });
       setAddUserId("");
-      refresh();
-      onChanged();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
     } finally {
@@ -1358,9 +1320,7 @@ function ManageMembersModal({
     if (!channel) return;
     setRemoving(userId);
     try {
-      await removeChannelMember(session.token, channel.channel_id, userId);
-      refresh();
-      onChanged();
+      await removeMemberMutation.mutateAsync({ channelId: channel.channel_id, userId });
     } catch (err) {
       toast("error", err instanceof ApiError ? err.message : String(err));
     } finally {
@@ -1424,20 +1384,15 @@ function ManageMembersModal({
 
 function BlocksTab({ appId }: { appId: number }) {
   const { session } = useSession();
-  const [blocks, setBlocks] = useState<DashboardBlock[] | null>(null);
-  const [names, setNames] = useState<Map<string, string>>(new Map());
-  const [error, setError] = useState<string | null>(null);
-
-  function refresh() {
-    listDashboardBlocks(session.token, appId)
-      .then(setBlocks)
-      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
-    listEndUsers(session.token, appId)
-      .then((users) => setNames(new Map(users.map((u) => [u.user_id, u.display_name]))))
-      .catch(() => {});
-  }
-
-  useEffect(refresh, [session.token, appId]);
+  const blocksQuery = useDashboardBlocksQuery(session.token, appId);
+  const blocks = blocksQuery.data ?? null;
+  const error = blocksQuery.error
+    ? blocksQuery.error instanceof ApiError
+      ? blocksQuery.error.message
+      : String(blocksQuery.error)
+    : null;
+  const { data: usersData } = useEndUsersQuery(session.token, appId);
+  const names = usersData ? new Map(usersData.map((u) => [u.user_id, u.display_name])) : new Map<string, string>();
 
   return (
     <div>
@@ -1487,67 +1442,27 @@ function BlockedUser({ userId, name }: { userId: string; name: string | undefine
 
 // ---- Settings ----
 
-// CAPABILITY_GROUPS drives the "Channel Capabilities" panel — every key
-// here must match internal/apps.ChannelCapabilities' json tags exactly
-// (lib/types.ts's ChannelCapabilities interface mirrors that struct field
-// for field). Grouped for readability only; the backend has no concept of
-// these groupings, just one flat set of 19 booleans.
-const CAPABILITY_GROUPS: { title: string; items: { key: keyof ChannelCapabilities; label: string; hint?: string }[] }[] = [
-  {
-    title: "Realtime events",
-    items: [
-      { key: "typing_events", label: "Typing Events", hint: "Broadcast typing.start / typing.stop over the socket." },
-      { key: "read_events", label: "Read Events", hint: "Let clients mark a channel read." },
-      { key: "connection_events", label: "Connection Events", hint: "Broadcast when a member connects or disconnects." },
-      { key: "custom_events", label: "Custom Events", hint: "Let clients broadcast an arbitrary event of their own." },
-      { key: "delivery_events", label: "Delivery Events", hint: "Stored — not yet wired into realtime delivery." },
-    ],
-  },
-  {
-    title: "Messaging",
-    items: [
-      { key: "reactions", label: "Reactions" },
-      { key: "threads_and_replies", label: "Threads & Replies" },
-      { key: "quotes", label: "Quotes" },
-      { key: "uploads", label: "Uploads", hint: "Client-supplied attachment URLs — this platform doesn't host files itself." },
-      { key: "url_enrichment", label: "URL Enrichment", hint: "Best-effort link preview fetched after send." },
-      { key: "location_sharing", label: "Location Sharing" },
-      { key: "polls", label: "Polls" },
-      { key: "message_count", label: "Message Count", hint: "Stored — reply counts are always tracked regardless of this toggle." },
-      { key: "strict_last_message_time", label: "Strict Last Message Time", hint: "Stored — inert until this platform has a system-message concept." },
-    ],
-  },
-  {
-    title: "Moderation & reminders",
-    items: [
-      { key: "mutes", label: "Mutes", hint: "Per-channel and one-directional — not enforced in delivery filtering." },
-      { key: "pending_messages", label: "Pending Messages", hint: "New messages need approval before other members see them." },
-      { key: "message_reminders", label: "Message Reminders" },
-      { key: "unread_reminders", label: "Unread Reminders" },
-      { key: "search", label: "Search", hint: "Simple substring search over message bodies." },
-    ],
-  },
-];
-
-// KNOWN_COMMANDS seeds the Commands panel's chip list — apps.App's own
-// default (migrations/control/0012_channel_capabilities.sql). An app can
-// still enable a command outside this set via the free-text field below;
-// SettingsTab always renders the union of this list and whatever's
-// currently enabled, so a custom command an owner already added stays
-// visible even though it isn't one of these five.
-const KNOWN_COMMANDS = ["giphy", "ban", "unban", "mute", "unmute"];
+// CAPABILITY_GROUPS and KNOWN_COMMANDS now live in @/lib/capabilities —
+// shared with lib/search-index.ts so the global search palette
+// (components/global-search.tsx) stays in sync with this panel without a
+// second copy of the list.
 
 function SettingsTab({
   appId,
   app,
-  onUpdated,
+  highlightKey,
 }: {
   appId: number;
   app: AppSummary | null;
-  onUpdated: (app: AppSummary) => void;
+  highlightKey?: string | null;
 }) {
   const { session } = useSession();
   const toast = useToast();
+  // updateApp's mutation patches the shared ["apps", orgId] cache directly
+  // on success (see useUpdateAppMutation) — this tab doesn't need its own
+  // "onUpdated" callback up to the parent, the `app` prop just re-renders
+  // from the same cache AppDetailView reads.
+  const updateAppMutation = useUpdateAppMutation(session.token, session.org.org_id);
   // Which single field is currently mid-PATCH — disables just that control
   // (not the whole form) and doubles as the request key so two toggles
   // flipped in quick succession don't race each other's optimistic state.
@@ -1565,8 +1480,7 @@ function SettingsTab({
   async function patch(fieldKey: string, body: UpdateAppRequest) {
     setSaving(fieldKey);
     try {
-      const updated = await updateApp(session.token, appId, body);
-      onUpdated(updated);
+      await updateAppMutation.mutateAsync({ appId, patch: body });
     } catch (err) {
       toast("error", err instanceof ApiError ? err.message : String(err));
     } finally {
@@ -1613,7 +1527,12 @@ function SettingsTab({
           </p>
           <div className="divide-y divide-border-soft">
             {group.items.map((item) => (
-              <div key={item.key} className="flex items-center justify-between gap-4 py-3.5 first:pt-0 last:pb-0">
+              <SettingHighlight
+                key={item.key}
+                id={item.key}
+                active={highlightKey === item.key}
+                className="flex items-center justify-between gap-4 rounded-lg px-2 -mx-2 py-3.5 first:pt-0 last:pb-0"
+              >
                 <div className="min-w-0 pr-4">
                   <div className="text-[15px] text-text">{item.label}</div>
                   {item.hint && <div className="mt-0.5 text-xs text-text-faint">{item.hint}</div>}
@@ -1624,7 +1543,7 @@ function SettingsTab({
                   onChange={(next) => toggleCapability(item.key, next)}
                   label={item.label}
                 />
-              </div>
+              </SettingHighlight>
             ))}
           </div>
         </Panel>
@@ -1634,7 +1553,11 @@ function SettingsTab({
         <h3 className="mb-1 text-[15px] font-semibold text-text">Message editing & threads</h3>
         <p className="mb-4 text-sm text-text-faint">Applies to every send/edit for this app.</p>
         <div className="divide-y divide-border-soft">
-          <div className="flex items-center justify-between gap-4 py-3.5 first:pt-0">
+          <SettingHighlight
+            id="message_edit_enabled"
+            active={highlightKey === "message_edit_enabled"}
+            className="flex items-center justify-between gap-4 rounded-lg px-2 -mx-2 py-3.5 first:pt-0"
+          >
             <div>
               <div className="text-[15px] text-text">Message Editing</div>
               <div className="mt-0.5 text-xs text-text-faint">Let end-users edit their own messages.</div>
@@ -1645,8 +1568,12 @@ function SettingsTab({
               onChange={(next) => patch("message_edit_enabled", { message_edit_enabled: next })}
               label="Message Editing"
             />
-          </div>
-          <div className="flex items-center justify-between gap-4 py-3.5">
+          </SettingHighlight>
+          <SettingHighlight
+            id="max_message_length"
+            active={highlightKey === "max_message_length"}
+            className="flex items-center justify-between gap-4 rounded-lg px-2 -mx-2 py-3.5"
+          >
             <div>
               <div className="text-[15px] text-text">Maximum Message Length</div>
               <div className="mt-0.5 text-xs text-text-faint">Characters allowed per message body.</div>
@@ -1666,8 +1593,12 @@ function SettingsTab({
               }}
               className="w-28 text-right"
             />
-          </div>
-          <div className="flex items-center justify-between gap-4 py-3.5 last:pb-0">
+          </SettingHighlight>
+          <SettingHighlight
+            id="max_thread_depth"
+            active={highlightKey === "max_thread_depth"}
+            className="flex items-center justify-between gap-4 rounded-lg px-2 -mx-2 py-3.5 last:pb-0"
+          >
             <div>
               <div className="text-[15px] text-text">Maximum Thread Depth</div>
               <div className="mt-0.5 text-xs text-text-faint">0 means unlimited nesting.</div>
@@ -1687,65 +1618,69 @@ function SettingsTab({
               }}
               className="w-28 text-right"
             />
+          </SettingHighlight>
+        </div>
+      </Panel>
+
+      <SettingHighlight id="dynamic_partitioning" active={highlightKey === "dynamic_partitioning"}>
+        <Panel>
+          <h3 className="mb-1 text-[15px] font-semibold text-text">Dynamic Partitioning</h3>
+          <p className="mb-4 text-sm text-text-faint">
+            Stored for parity with the platform's routing docs — every channel is already sharded regardless of this
+            toggle, so flipping it doesn't change delivery behavior today.
+          </p>
+          <div className="flex items-center justify-between gap-4">
+            <div className="text-[15px] text-text">Dynamic Partitioning</div>
+            <Switch
+              checked={app.dynamic_partitioning}
+              disabled={saving === "dynamic_partitioning"}
+              onChange={(next) => patch("dynamic_partitioning", { dynamic_partitioning: next })}
+              label="Dynamic Partitioning"
+            />
           </div>
-        </div>
-      </Panel>
+        </Panel>
+      </SettingHighlight>
 
-      <Panel>
-        <h3 className="mb-1 text-[15px] font-semibold text-text">Dynamic Partitioning</h3>
-        <p className="mb-4 text-sm text-text-faint">
-          Stored for parity with the platform's routing docs — every channel is already sharded regardless of this
-          toggle, so flipping it doesn't change delivery behavior today.
-        </p>
-        <div className="flex items-center justify-between gap-4">
-          <div className="text-[15px] text-text">Dynamic Partitioning</div>
-          <Switch
-            checked={app.dynamic_partitioning}
-            disabled={saving === "dynamic_partitioning"}
-            onChange={(next) => patch("dynamic_partitioning", { dynamic_partitioning: next })}
-            label="Dynamic Partitioning"
-          />
-        </div>
-      </Panel>
-
-      <Panel>
-        <h3 className="mb-1 text-[15px] font-semibold text-text">Commands</h3>
-        <p className="mb-4 text-sm text-text-faint">Slash-commands surfaced by the composer.</p>
-        <div className="flex flex-wrap gap-2">
-          {Array.from(new Set([...KNOWN_COMMANDS, ...app.enabled_commands])).map((cmd) => {
-            const active = app.enabled_commands.includes(cmd);
-            return (
-              <button
-                key={cmd}
-                onClick={() => toggleCommand(cmd)}
-                disabled={saving === "enabled_commands"}
-                className={`rounded-full border px-3.5 py-1.5 text-[13px] transition-colors duration-150 disabled:opacity-40 ${
-                  active ? "border-accent/30 bg-accent-soft text-accent" : "border-border text-text-muted hover:text-text"
-                }`}
-              >
-                /{cmd}
-              </button>
-            );
-          })}
-        </div>
-        <div className="mt-4 flex items-center gap-2">
-          <Input
-            placeholder="custom-command"
-            value={newCommand}
-            onChange={(e) => setNewCommand(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                addCustomCommand();
-              }
-            }}
-            className="max-w-[220px]"
-          />
-          <Button variant="secondary" onClick={addCustomCommand} icon={<Plus className="h-4 w-4" />}>
-            Add
-          </Button>
-        </div>
-      </Panel>
+      <SettingHighlight id="commands" active={highlightKey === "commands"}>
+        <Panel>
+          <h3 className="mb-1 text-[15px] font-semibold text-text">Commands</h3>
+          <p className="mb-4 text-sm text-text-faint">Slash-commands surfaced by the composer.</p>
+          <div className="flex flex-wrap gap-2">
+            {Array.from(new Set([...KNOWN_COMMANDS, ...app.enabled_commands])).map((cmd) => {
+              const active = app.enabled_commands.includes(cmd);
+              return (
+                <button
+                  key={cmd}
+                  onClick={() => toggleCommand(cmd)}
+                  disabled={saving === "enabled_commands"}
+                  className={`rounded-full border px-3.5 py-1.5 text-[13px] transition-colors duration-150 disabled:opacity-40 ${
+                    active ? "border-accent/30 bg-accent-soft text-accent" : "border-border text-text-muted hover:text-text"
+                  }`}
+                >
+                  /{cmd}
+                </button>
+              );
+            })}
+          </div>
+          <div className="mt-4 flex items-center gap-2">
+            <Input
+              placeholder="custom-command"
+              value={newCommand}
+              onChange={(e) => setNewCommand(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addCustomCommand();
+                }
+              }}
+              className="max-w-[220px]"
+            />
+            <Button variant="secondary" onClick={addCustomCommand} icon={<Plus className="h-4 w-4" />}>
+              Add
+            </Button>
+          </div>
+        </Panel>
+      </SettingHighlight>
     </div>
   );
 }

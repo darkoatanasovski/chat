@@ -2,10 +2,11 @@ package main
 
 import (
 	"context"
-	"io"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,28 +23,19 @@ import (
 // out.
 var firstURLPattern = regexp.MustCompile(`https?://[^\s<>"']+`)
 
-// linkPreviewFetchTimeout bounds the outbound HTTP request enrichLinkPreview
-// makes — generous relative to touchPresence's 3s (a real network fetch to
-// an arbitrary third-party host, not a single local Postgres write) but
-// still short enough that a slow/unresponsive host can't pile up goroutines
-// under sustained send volume.
+// linkPreviewFetchTimeout bounds the whole round trip to the og-service
+// (see cfg.OGServiceURL) — generous relative to touchPresence's 3s (a real
+// network call, not a single local Postgres write) but still short enough
+// that a slow/unresponsive og-service can't pile up goroutines under
+// sustained send volume. og-service applies its own, shorter timeout to
+// the actual third-party fetch; this is the outer budget for that call
+// plus the HTTP round trip to reach it.
 const linkPreviewFetchTimeout = 5 * time.Second
 
-// maxLinkPreviewFetchBytes caps how much of a fetched page enrichLinkPreview
-// reads before giving up looking for <title>/meta description — most of
-// them appear in the first few KB of well-formed HTML, and this bounds
-// memory/time against a host that serves an enormous or infinite response.
-const maxLinkPreviewFetchBytes = 64 * 1024
-
-var (
-	titleTagPattern = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
-	metaDescPattern = regexp.MustCompile(`(?is)<meta\s+[^>]*name=["']description["'][^>]*content=["']([^"']*)["']`)
-	htmlTagPattern  = regexp.MustCompile(`<[^>]*>`)
-)
-
-// enrichLinkPreview is a best-effort, fire-and-forget goroutine that fetches
-// metadata for the first URL found in a freshly-sent message's body and
-// stores it on messages.link_preview — the "url_enrichment" capability
+// enrichLinkPreview is a best-effort, fire-and-forget goroutine that asks
+// the standalone og-service (cmd/ogservice) for metadata on the first URL
+// found in a freshly-sent message's body and stores the result on
+// messages.link_preview — the "url_enrichment" capability
 // (migrations/shard/0011_channel_capabilities.sql). Mirrors touchPresence's
 // shape (background context, bounded timeout, log-and-swallow on failure)
 // but with a longer budget since this makes a real outbound HTTP request
@@ -58,15 +50,15 @@ func (a *App) enrichLinkPreview(pool *pgxpool.Pool, channelID, messageID uuid.UU
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), linkPreviewFetchTimeout)
 		defer cancel()
-		preview, err := fetchLinkPreview(ctx, url)
+		preview, err := fetchLinkPreview(ctx, a.cfg.OGServiceURL, url)
 		if err != nil {
 			a.log.Warn("link preview: fetch", "error", err, "url", url)
 			return
 		}
 		if preview == nil {
-			// Fetched fine, but the page had neither a <title> nor a
-			// description meta tag worth storing — leave link_preview
-			// null rather than writing an all-empty object.
+			// og-service fetched the page fine but found neither a title
+			// nor a description worth storing — leave link_preview null
+			// rather than writing an all-empty object.
 			return
 		}
 		if err := a.messagesRepo.SetLinkPreview(ctx, pool, channelID, messageID, preview); err != nil {
@@ -75,58 +67,56 @@ func (a *App) enrichLinkPreview(pool *pgxpool.Pool, channelID, messageID uuid.UU
 	}()
 }
 
-// fetchLinkPreview does the actual GET-and-scrape. No third-party HTML
-// parser is used (this codebase's dependency set is deliberately minimal —
-// see go.mod): a couple of targeted regexes over the first
-// maxLinkPreviewFetchBytes is good enough for "best-effort," the same
-// standard every other part of this feature holds itself to.
-func fetchLinkPreview(ctx context.Context, url string) (*messages.LinkPreview, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// fetchLinkPreview asks ogServiceBaseURL's GET /og?url= for metadata on
+// url and translates its response into a *messages.LinkPreview. All actual
+// fetching/scraping happens in og-service (internal/opengraph) — this is
+// just the HTTP client side of that call, kept in cmd/api so
+// enrichLinkPreview's fire-and-forget/timeout/log-and-swallow shape stays
+// exactly where the rest of that pattern (touchPresence, and formerly this
+// same function's own inline scraping) already lives.
+func fetchLinkPreview(ctx context.Context, ogServiceBaseURL, target string) (*messages.LinkPreview, error) {
+	reqURL := ogServiceBaseURL + "/og?url=" + url.QueryEscape(target)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "chat-link-preview/1.0 (+https://github.com/darkoatanasovski/chat)")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusBadGateway {
+		// og-service reached out and the fetch itself failed (bad host,
+		// non-2xx, timed out on its end) — same as this function
+		// previously returning (nil, nil) for a failed direct fetch: not
+		// worth surfacing as an application error, just no preview.
+		return nil, nil
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("og-service: unexpected status %d", resp.StatusCode)
+	}
+
+	var data struct {
+		URL         string `json:"url"`
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		ImageURL    string `json:"image_url"`
+		SiteName    string `json:"site_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("og-service: decode response: %w", err)
+	}
+
+	if data.Title == "" && data.Description == "" && data.ImageURL == "" && data.SiteName == "" {
 		return nil, nil
 	}
-
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxLinkPreviewFetchBytes))
-	if err != nil {
-		return nil, err
-	}
-	html := string(data)
-
-	preview := &messages.LinkPreview{URL: url}
-	if m := titleTagPattern.FindStringSubmatch(html); len(m) == 2 {
-		preview.Title = cleanHTMLText(m[1])
-	}
-	if m := metaDescPattern.FindStringSubmatch(html); len(m) == 2 {
-		preview.Description = cleanHTMLText(m[1])
-	}
-	if preview.Title == "" && preview.Description == "" {
-		return nil, nil
-	}
-	return preview, nil
-}
-
-// cleanHTMLText strips any nested tags a title/meta-content match happened
-// to pick up and trims surrounding whitespace — a lightweight substitute
-// for the html.UnescapeString + real-parser treatment a dedicated HTML
-// library would give this, in keeping with fetchLinkPreview's regex-based,
-// best-effort approach.
-func cleanHTMLText(s string) string {
-	s = htmlTagPattern.ReplaceAllString(s, "")
-	return collapseWhitespace(s)
-}
-
-var whitespacePattern = regexp.MustCompile(`\s+`)
-
-func collapseWhitespace(s string) string {
-	return strings.TrimSpace(whitespacePattern.ReplaceAllString(s, " "))
+	return &messages.LinkPreview{
+		URL:         target,
+		Title:       data.Title,
+		Description: data.Description,
+		ImageURL:    data.ImageURL,
+		SiteName:    data.SiteName,
+	}, nil
 }

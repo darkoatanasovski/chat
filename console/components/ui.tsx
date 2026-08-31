@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
+import { useEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
 import { animate, motion, useMotionValue, useTransform } from "framer-motion";
 import { Check, Loader2, X } from "lucide-react";
 import { twMerge } from "tailwind-merge";
@@ -273,6 +273,49 @@ export function Modal({
         </div>
         <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 py-6">{children}</div>
       </div>
+    </div>
+  );
+}
+
+/** Wraps a settings row/panel so the global search palette
+ * (components/global-search.tsx) can land on it: when `active` flips true —
+ * because the URL's `?setting=` param matches `id` — this scrolls the row
+ * into view and gives it a brief accent flash, then settles back to plain.
+ * The `data-setting-key` attribute is there mainly for debugging/tests;
+ * scrolling itself uses the ref, not a DOM query. */
+export function SettingHighlight({
+  id,
+  active,
+  className,
+  children,
+}: {
+  id: string;
+  active: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [flash, setFlash] = useState(false);
+
+  useEffect(() => {
+    if (!active) return;
+    ref.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setFlash(true);
+    const t = setTimeout(() => setFlash(false), 2200);
+    return () => clearTimeout(t);
+  }, [active]);
+
+  return (
+    <div
+      ref={ref}
+      data-setting-key={id}
+      className={cx(
+        "rounded-xl transition-colors duration-700",
+        flash && "bg-accent-soft ring-2 ring-accent/50",
+        className
+      )}
+    >
+      {children}
     </div>
   );
 }

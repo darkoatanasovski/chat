@@ -66,10 +66,17 @@ type Attachment struct {
 // forget fetch that never blocks or fails the send itself. Nil until that
 // fetch completes, or forever if it never does (disabled, no URL in the
 // body, fetch failed/timed out).
+//
+// The actual scraping happens in the standalone og-service
+// (cmd/ogservice, internal/opengraph) — cmd/api's enrichLinkPreview just
+// calls it over HTTP and stores whatever comes back — so this shape
+// mirrors internal/opengraph.Data field for field.
 type LinkPreview struct {
 	URL         string `json:"url"`
 	Title       string `json:"title,omitempty"`
 	Description string `json:"description,omitempty"`
+	ImageURL    string `json:"image_url,omitempty"`
+	SiteName    string `json:"site_name,omitempty"`
 }
 
 // Location is the "location_sharing" capability's optional point shared via

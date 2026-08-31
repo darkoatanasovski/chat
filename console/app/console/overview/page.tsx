@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowUpRight,
@@ -14,8 +14,15 @@ import {
   ShieldOff,
   Users as UsersIcon,
 } from "lucide-react";
-import { createApp, getAppsMessagesDaily, getOrgMessagesUsage, getUsage, listApps, listDashboardBlocks, ApiError } from "@/lib/api";
-import type { CreatedApp, MessagesUsage, Usage } from "@/lib/types";
+import { ApiError } from "@/lib/api";
+import {
+  useAppsMessagesDailyQuery,
+  useCreateAppMutation,
+  useOrgBlockedCountQuery,
+  useOrgMessagesUsageQuery,
+  useUsageQuery,
+} from "@/lib/queries";
+import type { CreatedApp } from "@/lib/types";
 import { ConsoleShell, useSession } from "@/components/shell";
 import { WorldMap } from "@/components/worldmap";
 import { AnimatedNumber, Button, ErrorBanner, Input, Label, Panel, Skeleton, Sparkline, WizardProgress } from "@/components/ui";
@@ -42,22 +49,15 @@ export default function OverviewPage() {
 // this whole page as step 2 of the signup wizard (FirstAppStep) instead.
 function OverviewView() {
   const { session } = useSession();
-  const [usage, setUsage] = useState<Usage | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  function refresh() {
-    getUsage(session.token)
-      .then(setUsage)
-      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
-  }
-
-  useEffect(refresh, [session.token]);
+  const usageQuery = useUsageQuery(session.token);
+  const usage = usageQuery.data;
+  const error = usageQuery.error ? (usageQuery.error instanceof ApiError ? usageQuery.error.message : String(usageQuery.error)) : null;
 
   const totalUsers = usage?.apps_detail.reduce((sum, a) => sum + a.users, 0) ?? 0;
   const totalChannels = usage?.apps_detail.reduce((sum, a) => sum + a.channels, 0) ?? 0;
 
   if (usage && usage.apps.used === 0) {
-    return <FirstAppStep onCreated={refresh} />;
+    return <FirstAppStep onCreated={() => usageQuery.refetch()} />;
   }
 
   return (
@@ -192,14 +192,7 @@ function StatCard({
 
 function BlockedStatCard({ index }: { index: number }) {
   const { session } = useSession();
-  const [total, setTotal] = useState<number | null>(null);
-
-  useEffect(() => {
-    listApps(session.token, session.org.org_id)
-      .then((apps) => Promise.all(apps.map((app) => listDashboardBlocks(session.token, app.app_id))))
-      .then((perApp) => setTotal(perApp.reduce((sum, blocks) => sum + blocks.length, 0)))
-      .catch(() => {});
-  }, [session.token, session.org.org_id]);
+  const { data: total } = useOrgBlockedCountQuery(session.token, session.org.org_id);
 
   return (
     <motion.div
@@ -223,30 +216,22 @@ function BlockedStatCard({ index }: { index: number }) {
 
 function MessagesStatCard({ index }: { index: number }) {
   const { session } = useSession();
-  const [usage, setUsage] = useState<MessagesUsage | null>(null);
-  const [daily, setDaily] = useState<number[] | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const { data: usage } = useOrgMessagesUsageQuery(session.token, session.org.org_id);
+  const { data: dailyRes } = useAppsMessagesDailyQuery(session.token);
 
-  useEffect(() => {
-    getOrgMessagesUsage(session.token, session.org.org_id)
-      .then(setUsage)
-      .catch(() => {});
-    // Org-wide daily trend: sum every app's per-day count for each of the
-    // last DAILY_WINDOW days (handleDashboardAppsMessagesDaily already
-    // aligns every app's `daily` array to the same date order, so summing
-    // index-by-index is safe without re-checking dates here).
-    getAppsMessagesDaily(session.token)
-      .then((res) => {
-        const totals = new Array(res.days.length).fill(0);
-        for (const app of res.apps) {
-          app.daily.forEach((count, i) => {
-            totals[i] += count;
-          });
-        }
-        setDaily(totals);
-      })
-      .catch(() => {});
-  }, [session.token, session.org.org_id]);
+  // Org-wide daily trend: sum every app's per-day count for each of the
+  // last DAILY_WINDOW days (handleDashboardAppsMessagesDaily already
+  // aligns every app's `daily` array to the same date order, so summing
+  // index-by-index is safe without re-checking dates here).
+  const daily = dailyRes
+    ? dailyRes.apps.reduce((totals, app) => {
+        app.daily.forEach((count, i) => {
+          totals[i] += count;
+        });
+        return totals;
+      }, new Array(dailyRes.days.length).fill(0))
+    : null;
 
   const today = daily ? daily[daily.length - 1] : 0;
 
@@ -339,9 +324,9 @@ const CONFETTI_COLORS = ["bg-emerald-400", "bg-amber-400", "bg-rose-400", "bg-cy
 // separate route to keep in sync.
 function FirstAppStep({ onCreated }: { onCreated: () => void }) {
   const { session } = useSession();
+  const createAppMutation = useCreateAppMutation(session.token, session.org.org_id);
   const [name, setName] = useState("");
   const [why, setWhy] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<CreatedApp | null>(null);
   const [copiedKey, setCopiedKey] = useState(false);
@@ -350,14 +335,11 @@ function FirstAppStep({ onCreated }: { onCreated: () => void }) {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
-    setLoading(true);
     try {
-      const app = await createApp(session.token, session.org.org_id, name.trim());
+      const app = await createAppMutation.mutateAsync(name.trim());
       setCreated(app);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
-    } finally {
-      setLoading(false);
     }
   }
 
@@ -426,7 +408,7 @@ function FirstAppStep({ onCreated }: { onCreated: () => void }) {
                     <Label>App name</Label>
                     <Input required autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Production" />
                   </div>
-                  <Button type="submit" variant="primary" loading={loading} className="justify-center">
+                  <Button type="submit" variant="primary" loading={createAppMutation.isPending} className="justify-center">
                     Create app
                   </Button>
                   {error && <ErrorBanner>{error}</ErrorBanner>}

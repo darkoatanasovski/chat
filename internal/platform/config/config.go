@@ -84,6 +84,13 @@ type Config struct {
 	// ConsoleBaseURL builds the return_url Dodo redirects the customer to
 	// once checkout completes.
 	ConsoleBaseURL string
+
+	// api: base URL of the standalone og-service (cmd/ogservice) —
+	// enrichLinkPreview (cmd/api/link_preview.go) calls
+	// "<OGServiceURL>/og?url=..." for the "url_enrichment" capability
+	// instead of scraping pages itself. Only cmd/api reads this; gateway
+	// and worker load it too (Load is shared) but simply never use it.
+	OGServiceURL string
 }
 
 func Load() (Config, error) {
@@ -106,6 +113,7 @@ func Load() (Config, error) {
 		DodoWebhookKey:     os.Getenv("DODO_PAYMENTS_WEBHOOK_KEY"),
 		DodoLiveMode:       os.Getenv("DODO_PAYMENTS_LIVE_MODE") == "true",
 		ConsoleBaseURL:     getenvDefault("CONSOLE_BASE_URL", "http://localhost:3001"),
+		OGServiceURL:       getenvDefault("OG_SERVICE_URL", "http://localhost:8095"),
 	}
 
 	c.DodoProductIDs = map[string]string{
