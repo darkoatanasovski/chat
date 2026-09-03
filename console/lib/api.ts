@@ -12,6 +12,7 @@ import type {
   DashboardPoll,
   DashboardUser,
   EndUser,
+  EndUserToken,
   Invite,
   MessagesDaily,
   MessagesUsage,
@@ -186,6 +187,14 @@ export function createEndUser(token: string, appId: number, displayName: string,
     token,
     body: JSON.stringify({ display_name: displayName, region }),
   });
+}
+
+/** Mints a short-lived client token for an existing end-user so the
+ * Playground (app/console/playground) can drive the end-user API as them.
+ * Backed by handleDashboardMintEndUserToken; 404 for a user that isn't in
+ * this app. */
+export function mintEndUserToken(token: string, appId: number, userId: string) {
+  return request<EndUserToken>(`/dashboard/apps/${appId}/users/${userId}/token`, { method: "POST", token });
 }
 
 export function listDashboardChannels(token: string, appId: number) {

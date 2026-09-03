@@ -4,7 +4,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 import { useRouter, usePathname } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { Boxes, CreditCard, Gauge, LayoutDashboard, LogOut, MessagesSquare, Users } from "lucide-react";
+import { Boxes, CreditCard, FlaskConical, Gauge, LayoutDashboard, LogOut, MessagesSquare, Users } from "lucide-react";
 import { loadSession, clearSession, saveSession } from "@/lib/session";
 import { useUsageQuery } from "@/lib/queries";
 import type { Session, Usage } from "@/lib/types";
@@ -18,6 +18,10 @@ import { GlobalSearch } from "./global-search";
 const NAV_ITEMS = [
   { href: "/console/overview", label: "Overview", icon: LayoutDashboard },
   { href: "/console/apps", label: "Apps", icon: Boxes },
+  // Global, not per-app: the Playground starts by picking an app, then
+  // drives every end-user feature (send, react, vote, ...) as one of that
+  // app's end-users — see app/console/playground/page.tsx.
+  { href: "/console/playground", label: "Playground", icon: FlaskConical },
   { href: "/console/team", label: "Team", icon: Users },
   { href: "/console/usage", label: "Usage", icon: Gauge },
   { href: "/console/billing", label: "Billing", icon: CreditCard },

@@ -20,6 +20,7 @@ export interface SearchItem {
 const STATIC_PAGES: { id: string; label: string; href: string }[] = [
   { id: "page-overview", label: "Overview", href: "/console/overview" },
   { id: "page-apps", label: "Apps", href: "/console/apps" },
+  { id: "page-playground", label: "Playground", href: "/console/playground" },
   { id: "page-team", label: "Team", href: "/console/team" },
   { id: "page-usage", label: "Usage", href: "/console/usage" },
   { id: "page-billing", label: "Billing", href: "/console/billing" },

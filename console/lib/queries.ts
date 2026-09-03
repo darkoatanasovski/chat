@@ -98,8 +98,8 @@ export function useEndUsersQuery(token: string, appId: number) {
   return useQuery({ queryKey: queryKeys.endUsers(appId), queryFn: () => listEndUsers(token, appId) });
 }
 
-export function useDashboardChannelsQuery(token: string, appId: number) {
-  return useQuery({ queryKey: queryKeys.dashboardChannels(appId), queryFn: () => listDashboardChannels(token, appId) });
+export function useDashboardChannelsQuery(token: string, appId: number, enabled = true) {
+  return useQuery({ queryKey: queryKeys.dashboardChannels(appId), queryFn: () => listDashboardChannels(token, appId), enabled });
 }
 
 export function useChannelMembersQuery(

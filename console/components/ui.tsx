@@ -1,6 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ButtonHTMLAttributes,
+  type InputHTMLAttributes,
+  type ReactNode,
+  type SelectHTMLAttributes,
+  type TextareaHTMLAttributes,
+} from "react";
 import { animate, motion, useMotionValue, useTransform } from "framer-motion";
 import { Check, Loader2, X } from "lucide-react";
 import { twMerge } from "tailwind-merge";
@@ -67,6 +76,19 @@ export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
       className={cx(
         "w-full rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-[15px] text-text placeholder:text-text-faint",
         "outline-none transition-colors duration-150 focus:border-accent/60",
+        props.className
+      )}
+    />
+  );
+}
+
+export function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return (
+    <textarea
+      {...props}
+      className={cx(
+        "w-full rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-[15px] text-text placeholder:text-text-faint",
+        "min-h-[84px] resize-y outline-none transition-colors duration-150 focus:border-accent/60",
         props.className
       )}
     />
@@ -369,10 +391,29 @@ export function Skeleton({ className }: { className?: string }) {
  * all `values.length` days rather than an empty box, so "no activity" is
  * visibly a fact about the week, not a missing chart. */
 export function Sparkline({ values, height = 40, className }: { values: number[]; height?: number; className?: string }) {
-  const width = 120;
-  const padX = 3;
+  // The line spans the card's full, responsive width, but the coordinate
+  // space has to stay square-scaled or the end-cap dot renders as a
+  // stretched ellipse: previously the SVG used a fixed 120-unit viewBox with
+  // preserveAspectRatio="none", so the x-axis was scaled up to fill the card
+  // while the y-axis wasn't, distorting the <circle>. Instead we measure the
+  // real pixel width and draw in that same 1:1 space, so the dot is always a
+  // true circle and the stroke is uniform (no non-scaling-stroke hack).
+  const ref = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(120);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => setWidth(el.clientWidth || 120);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const padX = 4;
   const padY = 5;
-  const innerW = width - padX * 2;
+  const innerW = Math.max(width - padX * 2, 1);
   const innerH = height - padY * 2;
   const n = Math.max(values.length, 1);
   const stepX = n > 1 ? innerW / (n - 1) : 0;
@@ -392,41 +433,24 @@ export function Sparkline({ values, height = 40, className }: { values: number[]
   const last = points[points.length - 1];
 
   return (
-    <svg
-      width="100%"
-      height={height}
-      viewBox={`0 0 ${width} ${height}`}
-      preserveAspectRatio="none"
-      className={cx("block overflow-visible", className)}
-      role="img"
-      aria-label={
-        max === 0
-          ? `No messages in the last ${values.length} days`
-          : `Messages for the last ${values.length} days, most recent ${values[values.length - 1]}`
-      }
-    >
-      {areaPath && <path d={areaPath} fill="var(--color-accent)" opacity={0.1} stroke="none" />}
-      <path
-        d={linePath}
-        fill="none"
-        stroke="var(--color-accent)"
-        strokeWidth={2}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        vectorEffect="non-scaling-stroke"
-      />
-      {last && (
-        <circle
-          cx={last.x}
-          cy={last.y}
-          r={4}
-          fill="var(--color-accent)"
-          stroke="var(--color-surface)"
-          strokeWidth={2}
-          vectorEffect="non-scaling-stroke"
-        />
-      )}
-    </svg>
+    <div ref={ref} className={cx("block w-full", className)}>
+      <svg
+        width={width}
+        height={height}
+        viewBox={`0 0 ${width} ${height}`}
+        className="block overflow-visible"
+        role="img"
+        aria-label={
+          max === 0
+            ? `No messages in the last ${values.length} days`
+            : `Messages for the last ${values.length} days, most recent ${values[values.length - 1]}`
+        }
+      >
+        {areaPath && <path d={areaPath} fill="var(--color-accent)" opacity={0.1} stroke="none" />}
+        <path d={linePath} fill="none" stroke="var(--color-accent)" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+        {last && <circle cx={last.x} cy={last.y} r={3.5} fill="var(--color-accent)" stroke="var(--color-surface)" strokeWidth={2} />}
+      </svg>
+    </div>
   );
 }
 

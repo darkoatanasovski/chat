@@ -141,6 +141,18 @@ export interface EndUser {
   status: UserStatus;
 }
 
+/** A client bearer token minted from the dashboard for one of an app's
+ * existing end-users — POST /dashboard/apps/{app_id}/users/{user_id}/token.
+ * Same shape/scope as the token POST /users hands a business's own backend,
+ * just shorter-lived (see cmd/api's playgroundTokenTTL); this is how the
+ * Playground acts as an end-user without the browser touching an app
+ * secret. */
+export interface EndUserToken {
+  user_id: string;
+  token: string;
+  expires_at: string;
+}
+
 export interface DashboardChannel {
   channel_id: string;
   name: string;

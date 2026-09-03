@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 func TestDashboardEndUsers_CreateAndList(t *testing.T) {
@@ -52,6 +54,60 @@ func TestDashboardEndUsers_CrossOrgIsolation(t *testing.T) {
 	}), otherToken), nil)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-org create end user: status = %d, want 403", rec.Code)
+	}
+}
+
+func TestDashboardEndUsers_MintToken(t *testing.T) {
+	app := testApp(t)
+	ownerToken, orgID, _ := signUpDashboardOrg(t, app, "Token Org")
+	appID, _, _ := createTestApp(t, app, orgID, ownerToken)
+	userID := createDashboardEndUser(t, app, ownerToken, appID, "Ada")
+
+	var minted dashboardEndUserTokenResponse
+	rec := do(t, app, authed(jsonRequest("POST", fmt.Sprintf("/dashboard/apps/%d/users/%s/token", appID, userID), nil), ownerToken), &minted)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("mint token: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if minted.Token == "" || minted.UserID != userID || minted.ExpiresAt == "" {
+		t.Fatalf("unexpected mint response: %+v", minted)
+	}
+
+	// The minted token is a real end-user token: it authenticates the
+	// client-scoped routes exactly like one from POST /users would.
+	var channels []map[string]any
+	rec = do(t, app, authed(jsonRequest("GET", "/users/me/channels", nil), minted.Token), &channels)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("use minted token: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	created := createTestChannel(t, app, minted.Token, "playground")
+	if created.ChannelID == "" {
+		t.Fatalf("create channel with minted token: empty channel id")
+	}
+
+	// Unknown user id → 404.
+	rec = do(t, app, authed(jsonRequest("POST", fmt.Sprintf("/dashboard/apps/%d/users/%s/token", appID, uuid.NewString()), nil), ownerToken), nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown user: status = %d, want 404", rec.Code)
+	}
+	// Malformed user id → 400.
+	rec = do(t, app, authed(jsonRequest("POST", fmt.Sprintf("/dashboard/apps/%d/users/not-a-uuid/token", appID), nil), ownerToken), nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("malformed user id: status = %d, want 400", rec.Code)
+	}
+
+	// A user that exists but belongs to a different app is indistinguishable
+	// from a nonexistent one (404, not 403) so app membership can't be probed.
+	foreignUser, _ := createTestUser(t, app, "Foreign")
+	rec = do(t, app, authed(jsonRequest("POST", fmt.Sprintf("/dashboard/apps/%d/users/%s/token", appID, foreignUser), nil), ownerToken), nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("foreign-app user: status = %d, want 404", rec.Code)
+	}
+
+	// Another org can't mint tokens for this app's users at all.
+	otherToken, _, _ := signUpDashboardOrg(t, app, "Other Token Org")
+	rec = do(t, app, authed(jsonRequest("POST", fmt.Sprintf("/dashboard/apps/%d/users/%s/token", appID, userID), nil), otherToken), nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-org mint: status = %d, want 403", rec.Code)
 	}
 }
 
