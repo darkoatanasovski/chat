@@ -33,6 +33,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /channels/{id}/messages/{message_id}/pin", a.instrument("pin_message", a.requireAuth(a.handlePinMessage)))
 	mux.HandleFunc("DELETE /channels/{id}/messages/{message_id}/pin", a.instrument("unpin_message", a.requireAuth(a.handleUnpinMessage)))
 	mux.HandleFunc("GET /channels/{id}/pinned-messages", a.instrument("list_pinned_messages", a.requireAuth(a.handleListPinnedMessages)))
+	mux.HandleFunc("POST /channels/{id}/messages/{message_id}/translate", a.instrument("translate_message", a.requireAuth(a.handleTranslateMessage)))
 	mux.HandleFunc("POST /channels/{id}/polls", a.instrument("create_poll", a.requireAuth(a.handleCreatePoll)))
 	mux.HandleFunc("GET /channels/{id}/polls/{poll_id}", a.instrument("get_poll", a.requireAuth(a.handleGetPoll)))
 	mux.HandleFunc("POST /channels/{id}/polls/{poll_id}/votes", a.instrument("vote_poll", a.requireAuth(a.handleVotePoll)))
@@ -98,6 +99,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("DELETE /dashboard/apps/{app_id}/blocks/{blocker_id}/{blocked_id}", a.instrument("dashboard_unblock_user", a.requireOrgUser(a.handleDashboardUnblockUser)))
 	mux.HandleFunc("GET /dashboard/apps/{app_id}/messages", a.instrument("dashboard_app_messages", a.requireOrgUser(a.handleDashboardAppMessages)))
 	mux.HandleFunc("GET /dashboard/apps/{app_id}/polls", a.instrument("dashboard_app_polls", a.requireOrgUser(a.handleDashboardAppPolls)))
+	mux.HandleFunc("GET /dashboard/apps/{app_id}/translations", a.instrument("dashboard_app_translations", a.requireOrgUser(a.handleDashboardAppTranslations)))
 
 	// Billing: self-serve plan upgrades via Dodo Payments hosted checkout
 	// (see cmd/api/handlers_billing.go). The webhook route is deliberately

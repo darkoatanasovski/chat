@@ -670,6 +670,14 @@ func (r *Repo) getByMessageID(ctx context.Context, pool *pgxpool.Pool, channelID
 	return m, true, nil
 }
 
+// GetByID exposes getByMessageID to callers outside this package —
+// internal/translations needs the message's current Body to send to the
+// translation provider (cmd/api's handleTranslateMessage), the same lookup
+// Pin/Unpin already do internally.
+func (r *Repo) GetByID(ctx context.Context, pool *pgxpool.Pool, channelID, messageID uuid.UUID) (Message, bool, error) {
+	return r.getByMessageID(ctx, pool, channelID, messageID)
+}
+
 // Exists reports whether messageID is a real message in channelID — used
 // by callers outside this package that need to validate a message
 // reference against a *different* physical database (internal/bookmarks

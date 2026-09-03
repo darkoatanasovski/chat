@@ -32,6 +32,7 @@ import (
 	"github.com/darkoatanasovski/chat/internal/reminders"
 	"github.com/darkoatanasovski/chat/internal/routing"
 	pgstorage "github.com/darkoatanasovski/chat/internal/storage/postgres"
+	"github.com/darkoatanasovski/chat/internal/translations"
 	"github.com/darkoatanasovski/chat/internal/users"
 
 	"log/slog"
@@ -83,6 +84,14 @@ type App struct {
 	// cfg.DodoAPIKey) — handlers_billing.go checks cfg.DodoAPIKey before
 	// using it, so an unconfigured client is simply never called.
 	dodo *dodopayments.Client
+
+	// translationClient is always non-nil, even when unconfigured (empty
+	// cfg.AzureTranslatorKey) — same "always construct it, let the client
+	// itself report unconfigured" shape as dodo above (see
+	// translations.Client.Configured).
+	translationClient    *translations.Client
+	translationsRepo     *translations.Repo
+	translationUsageRepo *translations.UsageRepo
 }
 
 func (a *App) shardPoolFor(channelID string) (pool *pgxpool.Pool, physicalShardID string, virtualShard int, err error) {

@@ -94,6 +94,8 @@ func (q *Quota) AllowRate(ctx context.Context, tier, capability, subjectKey stri
 		perMinute = limits.MessagePinsPerMinute
 	case CapabilityBookmarkWrite:
 		perMinute = limits.BookmarksPerMinute
+	case CapabilityTranslationRequest:
+		perMinute = limits.TranslationsPerMinute
 	default:
 		return Decision{}, fmt.Errorf("quota: %q is not a rate capability", capability)
 	}

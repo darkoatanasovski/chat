@@ -34,6 +34,7 @@ import (
 	"github.com/darkoatanasovski/chat/internal/routing"
 	pgstorage "github.com/darkoatanasovski/chat/internal/storage/postgres"
 	redisstorage "github.com/darkoatanasovski/chat/internal/storage/redis"
+	"github.com/darkoatanasovski/chat/internal/translations"
 	"github.com/darkoatanasovski/chat/internal/users"
 )
 
@@ -118,6 +119,12 @@ func main() {
 	}
 	dodoClient := dodopayments.NewClient(dodoOpts...)
 
+	translationClient := translations.NewClient(translations.Config{
+		Key:      cfg.AzureTranslatorKey,
+		Region:   cfg.AzureTranslatorRegion,
+		Endpoint: cfg.AzureTranslatorEndpoint,
+	})
+
 	app := &App{
 		cfg:             cfg,
 		log:             log,
@@ -151,6 +158,10 @@ func main() {
 		blocksCache:     realtime.NewBlocksCache(redisClient, m),
 		peerClient:      newPeerClient(),
 		dodo:            dodoClient,
+
+		translationClient:    translationClient,
+		translationsRepo:     translations.NewRepo(),
+		translationUsageRepo: translations.NewUsageRepo(controlPool),
 	}
 
 	metricsMux := http.NewServeMux()

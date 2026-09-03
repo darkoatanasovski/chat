@@ -19,11 +19,11 @@ import (
 var ErrNotFound = fmt.Errorf("apps: app not found")
 
 // ChannelCapabilities is the "Channel Capabilities" panel on the
-// dashboard's app settings screen — 19 independent, owner-toggleable
+// dashboard's app settings screen — 20 independent, owner-toggleable
 // feature switches, stored as one JSONB column (apps.channel_capabilities,
-// migrations/control/0012_channel_capabilities.sql) rather than 19 more
+// migrations/control/0012_channel_capabilities.sql) rather than 20 more
 // boolean columns following max_thread_depth/message_edit_enabled's
-// one-column-per-setting precedent, purely because 19 more positional
+// one-column-per-setting precedent, purely because 20 more positional
 // *bool parameters on UpdateSettings would stop being readable. Every
 // field here is read live wherever it gates behavior — never cached, same
 // discipline as every other per-app setting in this package.
@@ -95,6 +95,15 @@ type ChannelCapabilities struct {
 	// capability most apps won't enable. Left as an honest, documented gap
 	// rather than a silently-slow implementation.
 	DeliveryEvents bool `json:"delivery_events"`
+	// Translations gates POST
+	// /channels/{id}/messages/{message_id}/translate (internal/translations,
+	// cmd/api's handleTranslateMessage) — the 20th toggle on this panel,
+	// added the same JSONB-key way as the other 19 (no migration needed;
+	// missing/omitted on old rows just decodes to the zero value, off).
+	// Unlike every other toggle here, flipping this one on has a real
+	// per-request cost against the configured provider on a cache miss —
+	// see internal/translations' package doc comment.
+	Translations bool `json:"translations"`
 }
 
 type App struct {

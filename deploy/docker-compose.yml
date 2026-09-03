@@ -23,6 +23,13 @@ x-common-env: &common-env
   # harmless for gateway/worker, which load the same shared config but
   # never read this field.
   OG_SERVICE_URL: http://og-service:8080
+  # Only cmd/api calls this (the "translations" capability's
+  # handleTranslateMessage) — harmless for gateway/worker. Unset/empty is a
+  # valid "translation not configured" state (internal/translations.Client
+  # reports it as a 503 rather than failing startup), so this is safe to
+  # leave blank in any environment that isn't exercising translations.
+  AZURE_TRANSLATOR_KEY: ${AZURE_TRANSLATOR_KEY}
+  AZURE_TRANSLATOR_REGION: ${AZURE_TRANSLATOR_REGION}
 
 services:
   postgres-control:

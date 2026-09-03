@@ -7,7 +7,7 @@ import type { ChannelCapabilities } from "./types";
 // match internal/apps.ChannelCapabilities' json tags exactly (lib/types.ts's
 // ChannelCapabilities interface mirrors that struct field for field).
 // Grouped for readability only; the backend has no concept of these
-// groupings, just one flat set of 19 booleans.
+// groupings, just one flat set of 20 booleans.
 export const CAPABILITY_GROUPS: { title: string; items: { key: keyof ChannelCapabilities; label: string; hint?: string }[] }[] = [
   {
     title: "Realtime events",
@@ -29,6 +29,7 @@ export const CAPABILITY_GROUPS: { title: string; items: { key: keyof ChannelCapa
       { key: "url_enrichment", label: "URL Enrichment", hint: "Best-effort link preview fetched after send." },
       { key: "location_sharing", label: "Location Sharing" },
       { key: "polls", label: "Polls" },
+      { key: "translations", label: "Translations", hint: "On-demand message translation via Azure Translator — billed per request on a cache miss." },
       { key: "message_count", label: "Message Count", hint: "Stored — reply counts are always tracked regardless of this toggle." },
       { key: "strict_last_message_time", label: "Strict Last Message Time", hint: "Stored — inert until this platform has a system-message concept." },
     ],

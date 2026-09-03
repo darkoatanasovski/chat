@@ -40,6 +40,7 @@ export interface ChannelCapabilities {
   strict_last_message_time: boolean;
   location_sharing: boolean;
   delivery_events: boolean;
+  translations: boolean;
 }
 
 export interface AppSummary {
