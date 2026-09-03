@@ -2,12 +2,14 @@
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useRouter, usePathname } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { Boxes, CreditCard, Gauge, LayoutDashboard, LogOut, MessagesSquare, Users } from "lucide-react";
 import { loadSession, clearSession, saveSession } from "@/lib/session";
-import { getUsage, ApiError } from "@/lib/api";
+import { useUsageQuery } from "@/lib/queries";
 import type { Session, Usage } from "@/lib/types";
 import { Avatar, Badge, cx } from "./ui";
+import { GlobalSearch } from "./global-search";
 
 // Overview is the org-wide summary (totals across every app); each app's
 // own page carries the per-app breakdown on its Dashboard tab. There's no
@@ -35,8 +37,9 @@ export function useSession() {
 export function ConsoleShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
+  const queryClient = useQueryClient();
   const [session, setSessionState] = useState<Session | null | undefined>(undefined);
-  const [usage, setUsage] = useState<Usage | null>(null);
+  const { data: usage } = useUsageQuery(session?.token ?? "", !!session);
 
   useEffect(() => {
     const s = loadSession();
@@ -47,13 +50,6 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
     setSessionState(s);
   }, [router]);
 
-  useEffect(() => {
-    if (!session) return;
-    getUsage(session.token)
-      .then(setUsage)
-      .catch(() => {});
-  }, [session]);
-
   function setSession(s: Session) {
     saveSession(s);
     setSessionState(s);
@@ -61,6 +57,10 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
 
   function signOut() {
     clearSession();
+    // Otherwise a different account signing in on the same tab would
+    // briefly see this org's cached apps/usage/team before its own
+    // queries resolve.
+    queryClient.clear();
     router.replace("/console/login");
   }
 
@@ -130,9 +130,12 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
         </aside>
         <div className="flex min-w-0 flex-1 flex-col">
           <header className="flex shrink-0 items-center justify-between border-b border-border-soft px-10 py-5">
-            <div>
-              <div className="text-[15px] font-semibold text-text">{session.org.name}</div>
-              <div className="text-xs text-text-faint">Organization</div>
+            <div className="flex items-center gap-6">
+              <div>
+                <div className="text-[15px] font-semibold text-text">{session.org.name}</div>
+                <div className="text-xs text-text-faint">Organization</div>
+              </div>
+              <GlobalSearch />
             </div>
             <a href="/console/billing">
               <Badge tone="accent" className="cursor-pointer transition-opacity duration-150 hover:opacity-80">

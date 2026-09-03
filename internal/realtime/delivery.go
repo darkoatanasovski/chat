@@ -129,6 +129,42 @@ func (d *Delivery) resolveBlocked(ctx context.Context, actor uuid.UUID) (map[uui
 	return out, nil
 }
 
+// ToUser pushes frame directly to userID's connection(s), wherever they
+// live — the single-recipient counterpart to ToChannelMembers, for events
+// (message_reminder.due, unread.reminder) that are addressed to exactly one
+// person rather than a channel's whole membership. No block-list filtering
+// applies: these are system-originated notices about the recipient's own
+// state, not a communication from another user that a block could apply
+// to. A recipient with no live connection anywhere is silently skipped,
+// same best-effort contract as every other delivery path.
+func (d *Delivery) ToUser(ctx context.Context, userID uuid.UUID, frame []byte) error {
+	if d.hub.HasLocalUser(userID) {
+		d.hub.DeliverToUser(userID, frame)
+		return nil
+	}
+	return d.deliverRemote(ctx, []uuid.UUID{userID}, frame)
+}
+
+// ChannelsForUser returns userID's current channel_ids — backs
+// relayConnectionEvent's "connection_events" capability, the one realtime
+// producer in this package that needs "every channel this user is in"
+// rather than "every member of this one channel." Always reads Postgres
+// directly (no cache layer, unlike ToChannelMembers/IsMember): connects and
+// disconnects happen far less often than channel-membership lookups
+// elsewhere on the hot send/typing paths, so this stays a low-frequency
+// read, same class as internal/messages.Repo.CountDailyByChannels.
+func (d *Delivery) ChannelsForUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	channels, err := d.fallback.ListChannelsForUser(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("realtime: list channels for user: %w", err)
+	}
+	out := make([]uuid.UUID, len(channels))
+	for i, c := range channels {
+		out[i] = c.ChannelID
+	}
+	return out, nil
+}
+
 // IsMember reports whether userID is currently a member of channelID —
 // same resolution as ToChannelMembers, used to verify a client-asserted
 // channel_id on an inbound WS message before fanning anything out from it

@@ -84,6 +84,32 @@ type Config struct {
 	// ConsoleBaseURL builds the return_url Dodo redirects the customer to
 	// once checkout completes.
 	ConsoleBaseURL string
+
+	// api: base URL of the standalone og-service (cmd/ogservice) —
+	// enrichLinkPreview (cmd/api/link_preview.go) calls
+	// "<OGServiceURL>/og?url=..." for the "url_enrichment" capability
+	// instead of scraping pages itself. Only cmd/api reads this; gateway
+	// and worker load it too (Load is shared) but simply never use it.
+	OGServiceURL string
+
+	// api: Azure (Microsoft) Translator Text API — backs the
+	// "translations" channel capability (internal/translations,
+	// cmd/api/handlers_translate.go). Chosen over Google Cloud Translation
+	// and DeepL for being both the cheapest ($10/1M chars vs. $20/1M and
+	// $25/1M respectively, plus a permanent 2M-chars/month free tier) and
+	// the fastest (sub-100ms median) of the major providers as of this
+	// writing. Empty AzureTranslatorKey is a valid "translation not
+	// configured" state, same as DodoAPIKey above — the handler reports
+	// that as a 503 rather than the service failing to start.
+	AzureTranslatorKey string
+	// AzureTranslatorRegion is the Azure resource's region (e.g.
+	// "westeurope") — required by the Translator Text API alongside the
+	// key for any multi-service or regional Translator resource.
+	AzureTranslatorRegion string
+	// AzureTranslatorEndpoint defaults to Azure's global Translator
+	// endpoint; only overridden in tests or for a sovereign-cloud
+	// deployment.
+	AzureTranslatorEndpoint string
 }
 
 func Load() (Config, error) {
@@ -106,6 +132,11 @@ func Load() (Config, error) {
 		DodoWebhookKey:     os.Getenv("DODO_PAYMENTS_WEBHOOK_KEY"),
 		DodoLiveMode:       os.Getenv("DODO_PAYMENTS_LIVE_MODE") == "true",
 		ConsoleBaseURL:     getenvDefault("CONSOLE_BASE_URL", "http://localhost:3001"),
+		OGServiceURL:       getenvDefault("OG_SERVICE_URL", "http://localhost:8095"),
+
+		AzureTranslatorKey:      os.Getenv("AZURE_TRANSLATOR_KEY"),
+		AzureTranslatorRegion:   os.Getenv("AZURE_TRANSLATOR_REGION"),
+		AzureTranslatorEndpoint: getenvDefault("AZURE_TRANSLATOR_ENDPOINT", "https://api.cognitive.microsofttranslator.com"),
 	}
 
 	c.DodoProductIDs = map[string]string{

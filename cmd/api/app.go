@@ -18,6 +18,7 @@ import (
 	"github.com/darkoatanasovski/chat/internal/channels"
 	"github.com/darkoatanasovski/chat/internal/membership"
 	"github.com/darkoatanasovski/chat/internal/messages"
+	"github.com/darkoatanasovski/chat/internal/mutes"
 	"github.com/darkoatanasovski/chat/internal/organizations"
 	"github.com/darkoatanasovski/chat/internal/orgusers"
 	"github.com/darkoatanasovski/chat/internal/platform/auth"
@@ -28,8 +29,10 @@ import (
 	"github.com/darkoatanasovski/chat/internal/reactions"
 	"github.com/darkoatanasovski/chat/internal/readstate"
 	"github.com/darkoatanasovski/chat/internal/realtime"
+	"github.com/darkoatanasovski/chat/internal/reminders"
 	"github.com/darkoatanasovski/chat/internal/routing"
 	pgstorage "github.com/darkoatanasovski/chat/internal/storage/postgres"
+	"github.com/darkoatanasovski/chat/internal/translations"
 	"github.com/darkoatanasovski/chat/internal/users"
 
 	"log/slog"
@@ -68,7 +71,9 @@ type App struct {
 	reactionsRepo   *reactions.Repo
 	pollsRepo       *polls.Repo
 	readStateRepo   *readstate.Repo
+	remindersRepo   *reminders.Repo
 	blocksRepo      *blocks.Repo
+	mutesRepo       *mutes.Repo
 	bookmarksRepo   *bookmarks.Repo
 	membershipCache *realtime.MembershipCache
 	blocksCache     *realtime.BlocksCache
@@ -79,6 +84,14 @@ type App struct {
 	// cfg.DodoAPIKey) — handlers_billing.go checks cfg.DodoAPIKey before
 	// using it, so an unconfigured client is simply never called.
 	dodo *dodopayments.Client
+
+	// translationClient is always non-nil, even when unconfigured (empty
+	// cfg.AzureTranslatorKey) — same "always construct it, let the client
+	// itself report unconfigured" shape as dodo above (see
+	// translations.Client.Configured).
+	translationClient    *translations.Client
+	translationsRepo     *translations.Repo
+	translationUsageRepo *translations.UsageRepo
 }
 
 func (a *App) shardPoolFor(channelID string) (pool *pgxpool.Pool, physicalShardID string, virtualShard int, err error) {

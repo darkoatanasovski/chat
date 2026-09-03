@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { motion } from "framer-motion";
 import { Check, Clock, Copy, Mail, Plus, Trash2, Users } from "lucide-react";
-import { createInvite, listInvites, listTeam, removeTeamMember, ApiError } from "@/lib/api";
-import type { Invite, TeamMember } from "@/lib/types";
+import { ApiError } from "@/lib/api";
+import { useCreateInviteMutation, useInvitesQuery, useRemoveTeamMemberMutation, useTeamQuery } from "@/lib/queries";
+import type { Invite } from "@/lib/types";
 import { ConsoleShell, useSession } from "@/components/shell";
 import { useToast } from "@/components/toast";
 import { Avatar, Badge, Button, ErrorBanner, Input, Label, Modal, Panel, Select, Skeleton } from "@/components/ui";
@@ -22,29 +23,21 @@ function TeamView() {
   const toast = useToast();
   const isOwner = session.user.role === "owner";
 
-  const [team, setTeam] = useState<TeamMember[] | null>(null);
-  const [invites, setInvites] = useState<Invite[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const teamQuery = useTeamQuery(session.token);
+  const team = teamQuery.data ?? null;
+  const error = teamQuery.error ? (teamQuery.error instanceof ApiError ? teamQuery.error.message : String(teamQuery.error)) : null;
+  const { data: invitesData } = useInvitesQuery(session.token, isOwner);
+  const invites = invitesData ?? null;
+
   const [inviteOpen, setInviteOpen] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
-
-  function refresh() {
-    listTeam(session.token)
-      .then(setTeam)
-      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
-    if (isOwner) {
-      listInvites(session.token).then(setInvites).catch(() => {});
-    }
-  }
-
-  useEffect(refresh, [session.token, isOwner]);
+  const removeTeamMemberMutation = useRemoveTeamMemberMutation(session.token);
 
   async function handleRemove(userId: string) {
     setRemoving(userId);
     try {
-      await removeTeamMember(session.token, userId);
+      await removeTeamMemberMutation.mutateAsync(userId);
       toast("success", "Team member removed");
-      refresh();
     } catch (err) {
       toast("error", err instanceof ApiError ? err.message : String(err));
     } finally {
@@ -146,23 +139,17 @@ function TeamView() {
         </Panel>
       )}
 
-      <InviteModal
-        open={inviteOpen}
-        onClose={() => setInviteOpen(false)}
-        onCreated={() => {
-          refresh();
-        }}
-      />
+      <InviteModal open={inviteOpen} onClose={() => setInviteOpen(false)} />
     </div>
   );
 }
 
-function InviteModal({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
+function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { session } = useSession();
   const toast = useToast();
+  const createInviteMutation = useCreateInviteMutation(session.token);
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<"member" | "owner">("member");
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [invite, setInvite] = useState<Invite | null>(null);
   const [copied, setCopied] = useState(false);
@@ -178,15 +165,11 @@ function InviteModal({ open, onClose, onCreated }: { open: boolean; onClose: () 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
-    setLoading(true);
     try {
-      const inv = await createInvite(session.token, email.trim(), role);
+      const inv = await createInviteMutation.mutateAsync({ email: email.trim(), role });
       setInvite(inv);
-      onCreated();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
-    } finally {
-      setLoading(false);
     }
   }
 
@@ -216,7 +199,7 @@ function InviteModal({ open, onClose, onCreated }: { open: boolean; onClose: () 
               <option value="owner">Owner</option>
             </Select>
           </div>
-          <Button type="submit" variant="primary" loading={loading} className="justify-center">
+          <Button type="submit" variant="primary" loading={createInviteMutation.isPending} className="justify-center">
             Create invite
           </Button>
           {error && <ErrorBanner>{error}</ErrorBanner>}

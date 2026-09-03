@@ -164,6 +164,57 @@ type ReadUpdatedPayload struct {
 	LastReadSequence int64     `json:"last_read_sequence"`
 }
 
+const TopicMessageReminderDue = "message_reminder.due"
+
+// MessageReminderDuePayload carries one due reminder — the "message_reminders"
+// capability. Addressed to exactly one user (UserID), unlike every other
+// event in this file which broadcasts to a channel's whole membership; see
+// internal/realtime.Delivery.ToUser, the single-recipient delivery path
+// this event type is the reason for.
+type MessageReminderDuePayload struct {
+	ReminderID uuid.UUID `json:"reminder_id"`
+	ChannelID  uuid.UUID `json:"channel_id"`
+	MessageID  uuid.UUID `json:"message_id"`
+	UserID     uuid.UUID `json:"user_id"`
+}
+
+const TopicUnreadReminderDue = "unread_reminder.due"
+
+// UnreadReminderDuePayload notifies one member that they have unread
+// messages in a channel — the "unread_reminders" capability. Also
+// single-recipient, same as MessageReminderDuePayload. LastReadSequence and
+// LatestSequence are both carried so a client can render "N unread" without
+// a follow-up fetch.
+type UnreadReminderDuePayload struct {
+	ChannelID       uuid.UUID `json:"channel_id"`
+	UserID          uuid.UUID `json:"user_id"`
+	LastReadSequence int64    `json:"last_read_sequence"`
+	LatestSequence   int64    `json:"latest_sequence"`
+}
+
+const TopicCustomEvent = "custom.event"
+
+// CustomEventPayload carries a client-supplied event through the same
+// outbox->Kafka->fanout pipeline every other realtime event in this
+// codebase uses — the "custom_events" capability
+// (migrations/control/0012_channel_capabilities.sql). Unlike
+// MessageCreatedPayload/ReactionUpdatedPayload/etc., Data is fully
+// caller-defined: this API doesn't interpret or validate it beyond "valid
+// JSON," it only authenticates who sent it (SenderID) and which channel it
+// belongs to (ChannelID, inherited from the outbox row itself) before
+// relaying it to every other member's socket. EventType is a caller-chosen
+// string (e.g. "reaction.custom", "game.move") so a client's frame
+// dispatcher can tell different custom events apart without inspecting
+// Data's shape first.
+type CustomEventPayload struct {
+	EventID   uuid.UUID       `json:"event_id"`
+	ChannelID uuid.UUID       `json:"channel_id"`
+	SenderID  uuid.UUID       `json:"sender_id"`
+	EventType string          `json:"event_type"`
+	Data      json.RawMessage `json:"data,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
 // InsertOutbox writes an outbox row inside the caller's transaction. It must
 // always be called in the same transaction as the domain write it
 // accompanies (see internal/messages.Repo.Send) — that's what makes the

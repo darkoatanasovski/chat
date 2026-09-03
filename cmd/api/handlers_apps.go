@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -26,15 +27,30 @@ type appResponse struct {
 	// messages (PATCH /channels/{id}/messages/{message_id}). See
 	// apps.App.MessageEditEnabled.
 	MessageEditEnabled bool `json:"message_edit_enabled"`
+	// ChannelCapabilities: the dashboard's "Channel Capabilities" toggle
+	// panel. See apps.ChannelCapabilities.
+	ChannelCapabilities apps.ChannelCapabilities `json:"channel_capabilities"`
+	// MaxMessageLength: the composer character limit. See
+	// apps.App.MaxMessageLength.
+	MaxMessageLength int `json:"max_message_length"`
+	// EnabledCommands: slash-commands surfaced by the composer. See
+	// apps.App.EnabledCommands.
+	EnabledCommands []string `json:"enabled_commands"`
+	// DynamicPartitioning: see apps.App.DynamicPartitioning.
+	DynamicPartitioning bool `json:"dynamic_partitioning"`
 }
 
 func appResponseFrom(app apps.App) appResponse {
 	return appResponse{
-		AppID:              app.AppID,
-		Name:               app.Name,
-		CreatedAt:          app.CreatedAt.Format(rfc3339Milli),
-		MaxThreadDepth:     app.MaxThreadDepth,
-		MessageEditEnabled: app.MessageEditEnabled,
+		AppID:               app.AppID,
+		Name:                app.Name,
+		CreatedAt:           app.CreatedAt.Format(rfc3339Milli),
+		MaxThreadDepth:      app.MaxThreadDepth,
+		MessageEditEnabled:  app.MessageEditEnabled,
+		ChannelCapabilities: app.ChannelCapabilities,
+		MaxMessageLength:    app.MaxMessageLength,
+		EnabledCommands:     app.EnabledCommands,
+		DynamicPartitioning: app.DynamicPartitioning,
 	}
 }
 
@@ -154,23 +170,33 @@ func (a *App) handleListApps(w http.ResponseWriter, r *http.Request) {
 }
 
 // updateAppRequest is PATCH /apps/{app_id}'s body — a genuine partial
-// update now that there are two independently settable fields
-// (max_thread_depth, message_edit_enabled): each is a *pointer (nil = "not
-// being changed"), at least one of which must be present. A future
-// settable field follows the same shape — its own *pointer field here,
-// not a move to PUT semantics.
+// update: every field is optional (nil = "not being changed"), at least
+// one of which must be present.
+//
+// ChannelCapabilities is itself a partial update within a partial update:
+// it's raw JSON rather than a apps.ChannelCapabilities value so that
+// {"reactions": false} only touches the "reactions" key. handleUpdateApp
+// unmarshals it onto a *copy of the app's current capabilities* rather
+// than a zero-value struct — encoding/json only overwrites the keys
+// actually present in the payload, leaving every other field exactly as
+// it already was, which is what makes that trick work instead of every
+// omitted capability silently reverting to false.
 type updateAppRequest struct {
-	MaxThreadDepth     *int  `json:"max_thread_depth"`
-	MessageEditEnabled *bool `json:"message_edit_enabled"`
+	MaxThreadDepth      *int            `json:"max_thread_depth"`
+	MessageEditEnabled  *bool           `json:"message_edit_enabled"`
+	ChannelCapabilities json.RawMessage `json:"channel_capabilities"`
+	MaxMessageLength    *int            `json:"max_message_length"`
+	EnabledCommands     *[]string       `json:"enabled_commands"`
+	DynamicPartitioning *bool           `json:"dynamic_partitioning"`
 }
 
 // handleUpdateApp backs PATCH /apps/{app_id}. Whichever of
 // updateAppRequest's fields are present get applied together in one
-// UpdateSettings call; anything omitted is left exactly as it was. Both
-// settings take effect on the very next request that reads them (a reply's
-// thread-depth check, an edit's enabled check) since neither is ever cached
-// server-side — a "why didn't my change take effect" support question isn't
-// worth the read either would save.
+// UpdateSettings call; anything omitted is left exactly as it was. Every
+// setting takes effect on the very next request that reads it (a reply's
+// thread-depth check, an edit's enabled check, a capability gate) since
+// none of them is ever cached server-side — a "why didn't my change take
+// effect" support question isn't worth the read either would save.
 func (a *App) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	orgIdentity, _ := orgIdentityFromContext(r.Context())
 	app, ok := a.requireOwnedApp(w, r, orgIdentity.OrgID)
@@ -182,16 +208,32 @@ func (a *App) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	if req.MaxThreadDepth == nil && req.MessageEditEnabled == nil {
-		writeError(w, http.StatusBadRequest, "at least one of max_thread_depth or message_edit_enabled is required")
+	if req.MaxThreadDepth == nil && req.MessageEditEnabled == nil && req.ChannelCapabilities == nil &&
+		req.MaxMessageLength == nil && req.EnabledCommands == nil && req.DynamicPartitioning == nil {
+		writeError(w, http.StatusBadRequest, "at least one setting is required")
 		return
 	}
 	if req.MaxThreadDepth != nil && *req.MaxThreadDepth < 0 {
 		writeError(w, http.StatusBadRequest, "max_thread_depth must be >= 0 (0 means unlimited)")
 		return
 	}
+	if req.MaxMessageLength != nil && *req.MaxMessageLength <= 0 {
+		writeError(w, http.StatusBadRequest, "max_message_length must be > 0")
+		return
+	}
 
-	updated, err := a.appsRepo.UpdateSettings(r.Context(), app.AppID, req.MaxThreadDepth, req.MessageEditEnabled)
+	var mergedCapabilities *apps.ChannelCapabilities
+	if req.ChannelCapabilities != nil {
+		merged := app.ChannelCapabilities
+		if err := json.Unmarshal(req.ChannelCapabilities, &merged); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid channel_capabilities")
+			return
+		}
+		mergedCapabilities = &merged
+	}
+
+	updated, err := a.appsRepo.UpdateSettings(r.Context(), app.AppID, req.MaxThreadDepth, req.MessageEditEnabled,
+		mergedCapabilities, req.MaxMessageLength, req.EnabledCommands, req.DynamicPartitioning)
 	if err != nil {
 		if errors.Is(err, apps.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "app not found")

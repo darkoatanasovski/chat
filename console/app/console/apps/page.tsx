@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { motion } from "framer-motion";
 import { Boxes, Check, Copy, KeyRound, Plus } from "lucide-react";
-import { createApp, getAppsMessagesDaily, listApps, ApiError } from "@/lib/api";
-import type { AppDailyMessages, AppSummary, CreatedApp } from "@/lib/types";
+import { ApiError } from "@/lib/api";
+import { useAppsMessagesDailyQuery, useAppsQuery, useCreateAppMutation } from "@/lib/queries";
+import type { CreatedApp } from "@/lib/types";
 import { ConsoleShell, useSession } from "@/components/shell";
 import { useToast } from "@/components/toast";
 import { Button, ErrorBanner, Input, Label, Modal, Panel, Skeleton, Sparkline } from "@/components/ui";
@@ -27,24 +28,17 @@ export default function AppsPage() {
 function AppsView() {
   const { session } = useSession();
   const toast = useToast();
-  const [apps, setApps] = useState<AppSummary[] | null>(null);
-  const [messagesByApp, setMessagesByApp] = useState<Map<number, AppDailyMessages> | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
 
-  function refresh() {
-    listApps(session.token, session.org.org_id)
-      .then(setApps)
-      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
-    // Independent of the apps list itself — a slower or failed load here
-    // shouldn't block the grid, it just means cards render with zeroed
-    // stats until it resolves.
-    getAppsMessagesDaily(session.token)
-      .then((res) => setMessagesByApp(new Map(res.apps.map((a) => [a.app_id, a]))))
-      .catch(() => {});
-  }
+  const appsQuery = useAppsQuery(session.token, session.org.org_id);
+  const apps = appsQuery.data ?? null;
+  const error = appsQuery.error ? (appsQuery.error instanceof ApiError ? appsQuery.error.message : String(appsQuery.error)) : null;
 
-  useEffect(refresh, [session.token, session.org.org_id]);
+  // Independent of the apps list itself — a slower or failed load here
+  // shouldn't block the grid, it just means cards render with zeroed
+  // stats until it resolves.
+  const { data: dailyRes } = useAppsMessagesDailyQuery(session.token);
+  const messagesByApp = dailyRes ? new Map(dailyRes.apps.map((a) => [a.app_id, a])) : null;
 
   return (
     <div>
@@ -129,10 +123,7 @@ function AppsView() {
       <CreateAppModal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        onCreated={() => {
-          refresh();
-          toast("success", "App created");
-        }}
+        onCreated={() => toast("success", "App created")}
       />
     </div>
   );
@@ -140,8 +131,8 @@ function AppsView() {
 
 function CreateAppModal({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
   const { session } = useSession();
+  const createAppMutation = useCreateAppMutation(session.token, session.org.org_id);
   const [name, setName] = useState("");
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<CreatedApp | null>(null);
   const [copiedKey, setCopiedKey] = useState(false);
@@ -158,15 +149,12 @@ function CreateAppModal({ open, onClose, onCreated }: { open: boolean; onClose: 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
-    setLoading(true);
     try {
-      const app = await createApp(session.token, session.org.org_id, name.trim());
+      const app = await createAppMutation.mutateAsync(name.trim());
       setCreated(app);
       onCreated();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
-    } finally {
-      setLoading(false);
     }
   }
 
@@ -201,7 +189,7 @@ function CreateAppModal({ open, onClose, onCreated }: { open: boolean; onClose: 
             <Label>App name</Label>
             <Input required autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Production" />
           </div>
-          <Button type="submit" variant="primary" loading={loading} className="justify-center">
+          <Button type="submit" variant="primary" loading={createAppMutation.isPending} className="justify-center">
             Create app
           </Button>
           {error && <ErrorBanner>{error}</ErrorBanner>}

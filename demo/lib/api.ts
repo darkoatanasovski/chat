@@ -144,6 +144,28 @@ export function removeReaction(apiBase: string, token: string, channelId: string
   });
 }
 
+interface TranslateMessageResult {
+  translated_text: string;
+  source_lang: string;
+  target_lang: string;
+  /** True when this came from the server's translation cache instead of a
+   * fresh call to the configured provider — a repeat request for the same
+   * message/language never costs anything past the first time. */
+  cached: boolean;
+}
+
+// translateMessage requires the app's "translations" channel capability to
+// be enabled (403 otherwise) and is rate-limited well below other actions
+// since a cache miss calls a paid third-party provider server-side — see
+// internal/translations' package doc comment.
+export function translateMessage(apiBase: string, token: string, channelId: string, messageId: string, targetLang: string) {
+  return request<TranslateMessageResult>(apiBase, `/channels/${channelId}/messages/${messageId}/translate`, {
+    method: "POST",
+    token,
+    body: JSON.stringify({ target_lang: targetLang }),
+  });
+}
+
 // Idempotent — pinning an already-pinned message leaves it unchanged. Any
 // channel member may pin; there's no channel-owner role in this API.
 export function pinMessage(apiBase: string, token: string, channelId: string, messageId: string) {

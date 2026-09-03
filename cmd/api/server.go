@@ -33,12 +33,23 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /channels/{id}/messages/{message_id}/pin", a.instrument("pin_message", a.requireAuth(a.handlePinMessage)))
 	mux.HandleFunc("DELETE /channels/{id}/messages/{message_id}/pin", a.instrument("unpin_message", a.requireAuth(a.handleUnpinMessage)))
 	mux.HandleFunc("GET /channels/{id}/pinned-messages", a.instrument("list_pinned_messages", a.requireAuth(a.handleListPinnedMessages)))
+	mux.HandleFunc("POST /channels/{id}/messages/{message_id}/translate", a.instrument("translate_message", a.requireAuth(a.handleTranslateMessage)))
 	mux.HandleFunc("POST /channels/{id}/polls", a.instrument("create_poll", a.requireAuth(a.handleCreatePoll)))
 	mux.HandleFunc("GET /channels/{id}/polls/{poll_id}", a.instrument("get_poll", a.requireAuth(a.handleGetPoll)))
 	mux.HandleFunc("POST /channels/{id}/polls/{poll_id}/votes", a.instrument("vote_poll", a.requireAuth(a.handleVotePoll)))
 	mux.HandleFunc("DELETE /channels/{id}/polls/{poll_id}/votes", a.instrument("clear_poll_votes", a.requireAuth(a.handleClearPollVotes)))
 	mux.HandleFunc("POST /channels/{id}/read", a.instrument("mark_read", a.requireAuth(a.handleMarkRead)))
 	mux.HandleFunc("GET /channels/{id}/read-state", a.instrument("list_read_state", a.requireAuth(a.handleListReadState)))
+	mux.HandleFunc("GET /channels/{id}/messages/search", a.instrument("search_messages", a.requireAuth(a.handleSearchMessages)))
+	mux.HandleFunc("POST /channels/{id}/events", a.instrument("send_custom_event", a.requireAuth(a.handleSendCustomEvent)))
+	mux.HandleFunc("POST /channels/{id}/mutes", a.instrument("mute_user", a.requireAuth(a.handleMuteUser)))
+	mux.HandleFunc("DELETE /channels/{id}/mutes/{user_id}", a.instrument("unmute_user", a.requireAuth(a.handleUnmuteUser)))
+	mux.HandleFunc("GET /channels/{id}/mutes", a.instrument("list_mutes", a.requireAuth(a.handleListMutes)))
+	mux.HandleFunc("POST /channels/{id}/messages/{message_id}/reminders", a.instrument("create_message_reminder", a.requireAuth(a.handleCreateMessageReminder)))
+	mux.HandleFunc("DELETE /channels/{id}/messages/{message_id}/reminders", a.instrument("cancel_message_reminder", a.requireAuth(a.handleCancelMessageReminder)))
+	mux.HandleFunc("GET /channels/{id}/messages/pending", a.instrument("list_pending_messages", a.requireAuth(a.handleListPendingMessages)))
+	mux.HandleFunc("POST /channels/{id}/messages/{message_id}/approve", a.instrument("approve_message", a.requireAuth(a.handleApproveMessage)))
+	mux.HandleFunc("POST /channels/{id}/messages/{message_id}/reject", a.instrument("reject_message", a.requireAuth(a.handleRejectMessage)))
 
 	mux.HandleFunc("GET /users/me/channels", a.instrument("list_my_channels", a.requireAuth(a.handleListMyChannels)))
 
@@ -88,6 +99,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("DELETE /dashboard/apps/{app_id}/blocks/{blocker_id}/{blocked_id}", a.instrument("dashboard_unblock_user", a.requireOrgUser(a.handleDashboardUnblockUser)))
 	mux.HandleFunc("GET /dashboard/apps/{app_id}/messages", a.instrument("dashboard_app_messages", a.requireOrgUser(a.handleDashboardAppMessages)))
 	mux.HandleFunc("GET /dashboard/apps/{app_id}/polls", a.instrument("dashboard_app_polls", a.requireOrgUser(a.handleDashboardAppPolls)))
+	mux.HandleFunc("GET /dashboard/apps/{app_id}/translations", a.instrument("dashboard_app_translations", a.requireOrgUser(a.handleDashboardAppTranslations)))
 
 	// Billing: self-serve plan upgrades via Dodo Payments hosted checkout
 	// (see cmd/api/handlers_billing.go). The webhook route is deliberately

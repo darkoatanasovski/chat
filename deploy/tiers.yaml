@@ -30,6 +30,13 @@
 # at all (relayed directly over the WebSocket, see
 # internal/realtime.ConnectHandler.relayTyping).
 #
+# translations_per_minute is set well below every other per-minute limit at
+# every tier, unlike most siblings above which mirror an existing number —
+# a translation request can hit a paid third-party provider
+# (internal/translations) on a cache miss, so it's tuned as a real-cost
+# budget rather than an abuse budget the way reactions/bookmarks/polls are.
+#
+
 # retention_days is how long a message survives before the per-shard
 # retention sweep (cmd/worker) deletes it, <= 0 meaning "keep forever" (see
 # ENTERPRISE below). It's the one setting here that isn't a rate/resource
@@ -49,6 +56,7 @@ tiers:
     read_updates_per_minute: 30
     polls_per_minute: 5
     poll_votes_per_minute: 40
+    translations_per_minute: 10
     retention_days: 7
 
   PRO:
@@ -63,6 +71,7 @@ tiers:
     read_updates_per_minute: 300
     polls_per_minute: 50
     poll_votes_per_minute: 400
+    translations_per_minute: 100
     retention_days: 30
 
   BUSINESS:
@@ -77,6 +86,7 @@ tiers:
     read_updates_per_minute: 1500
     polls_per_minute: 250
     poll_votes_per_minute: 2000
+    translations_per_minute: 500
     retention_days: 90
 
   ENTERPRISE:
@@ -91,4 +101,5 @@ tiers:
     read_updates_per_minute: 15000
     polls_per_minute: 2500
     poll_votes_per_minute: 20000
+    translations_per_minute: 5000
     retention_days: 0

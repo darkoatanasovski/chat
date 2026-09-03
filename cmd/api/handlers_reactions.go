@@ -81,6 +81,10 @@ func (a *App) handleAddReaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !a.checkReactionCapability(w, r, identity) {
+		return
+	}
+
 	if !a.checkReactionRateLimit(w, r, identity) {
 		return
 	}
@@ -151,6 +155,10 @@ func (a *App) handleRemoveReaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !a.checkReactionCapability(w, r, identity) {
+		return
+	}
+
 	if !a.checkReactionRateLimit(w, r, identity) {
 		return
 	}
@@ -180,6 +188,27 @@ func (a *App) handleRemoveReaction(w http.ResponseWriter, r *http.Request) {
 	a.touchPresence(identity.UserID)
 
 	writeJSON(w, http.StatusOK, reactionStateResponse{ReactionCounts: counts, LatestReactions: toReactionSummaryResponse(latest)})
+}
+
+// checkReactionCapability gates both add and remove on this app's
+// "reactions" channel capability — read live (never cached) so flipping it
+// via PATCH /apps/{app_id} takes effect on the very next attempt, same
+// discipline as MessageEditEnabled's check in handleEditMessage. Removal is
+// gated too, not just adding: with reactions off, a client shouldn't be
+// able to touch reaction state at all, including clearing its own past
+// reaction.
+func (a *App) checkReactionCapability(w http.ResponseWriter, r *http.Request, identity Identity) bool {
+	app, err := a.appsRepo.Get(r.Context(), identity.AppID)
+	if err != nil {
+		a.log.Error("load app for reaction capability check", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to check reaction capability")
+		return false
+	}
+	if !app.ChannelCapabilities.Reactions {
+		writeError(w, http.StatusForbidden, "reactions are not enabled for this app")
+		return false
+	}
+	return true
 }
 
 // checkReactionRateLimit enforces reactions_per_minute, shared by add and

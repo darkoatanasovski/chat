@@ -20,6 +20,7 @@ import type {
   RevealedSecret,
   Session,
   TeamMember,
+  UpdateAppRequest,
   Usage,
 } from "./types";
 
@@ -87,6 +88,14 @@ export function createApp(token: string, orgId: number, name: string) {
     method: "POST",
     token,
     body: JSON.stringify({ name }),
+  });
+}
+
+export function updateApp(token: string, appId: number, patch: UpdateAppRequest) {
+  return request<AppSummary>(`/apps/${appId}`, {
+    method: "PATCH",
+    token,
+    body: JSON.stringify(patch),
   });
 }
 

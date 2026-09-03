@@ -36,6 +36,19 @@ type Metrics struct {
 	CrossRegionLatency *prometheus.HistogramVec
 
 	MessagesExpiredTotal prometheus.Counter
+
+	// UnreadRemindersSentTotal counts unread.reminder notices cmd/worker's
+	// UnreadSweeper has actually written to the outbox — the
+	// "unread_reminders" capability. Same "background job gets its own
+	// counter" precedent as MessagesExpiredTotal.
+	UnreadRemindersSentTotal prometheus.Counter
+
+	// OGRequestsTotal counts cmd/ogservice's GET /og requests by how they
+	// were resolved: "cache_hit", "fetched" (cache miss, fetch succeeded —
+	// including a legitimately empty result), or "fetch_error". Same
+	// "background/narrow service gets its own counter" precedent as
+	// UnreadRemindersSentTotal.
+	OGRequestsTotal *prometheus.CounterVec
 }
 
 func New(namespace string) *Metrics {
@@ -102,6 +115,12 @@ func New(namespace string) *Metrics {
 		MessagesExpiredTotal: promauto.NewCounter(prometheus.CounterOpts{
 			Namespace: namespace, Name: "messages_expired_total",
 		}),
+		UnreadRemindersSentTotal: promauto.NewCounter(prometheus.CounterOpts{
+			Namespace: namespace, Name: "unread_reminders_sent_total",
+		}),
+		OGRequestsTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace, Name: "og_requests_total",
+		}, []string{"result"}),
 	}
 }
 

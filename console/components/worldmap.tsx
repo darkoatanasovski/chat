@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { motion } from "framer-motion";
 import { geoNaturalEarth1, geoPath } from "d3-geo";
 import { feature } from "topojson-client";
 import landTopology from "world-atlas/land-110m.json";
 import { Globe2 } from "lucide-react";
-import { getRegionUsage, ApiError } from "@/lib/api";
-import type { RegionUsage } from "@/lib/types";
+import { ApiError } from "@/lib/api";
+import { useRegionUsageQuery } from "@/lib/queries";
 import { useSession } from "./shell";
 import { ErrorBanner, Panel, Skeleton } from "./ui";
 
@@ -42,14 +42,8 @@ function useMapGeometry() {
 export function WorldMap() {
   const { session } = useSession();
   const { landPath, markers } = useMapGeometry();
-  const [usage, setUsage] = useState<RegionUsage[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    getRegionUsage(session.token)
-      .then(setUsage)
-      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
-  }, [session.token]);
+  const { data: usage, error: queryError } = useRegionUsageQuery(session.token);
+  const error = queryError ? (queryError instanceof ApiError ? queryError.message : String(queryError)) : null;
 
   const countByRegion = useMemo(() => {
     const map: Record<string, number> = {};

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
+import { useEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
 import { animate, motion, useMotionValue, useTransform } from "framer-motion";
 import { Check, Loader2, X } from "lucide-react";
 import { twMerge } from "tailwind-merge";
@@ -88,6 +88,46 @@ export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
 
 export function Label({ children }: { children: ReactNode }) {
   return <label className="mb-2 block text-sm font-medium text-text-muted">{children}</label>;
+}
+
+// Switch is a toggle control — the "Channel Capabilities" panel's building
+// block (console/app/console/apps/[id]/page.tsx's SettingsTab) but generic
+// enough for any other on/off setting. Uncontrolled internally: the parent
+// always owns `checked` and reacts to onChange, same pattern as a native
+// checkbox, so a parent can debounce/persist however it needs to (see
+// SettingsTab's optimistic-update-then-PATCH approach).
+export function Switch({
+  checked,
+  onChange,
+  disabled,
+  label,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+  label?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={cx(
+        "relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-150",
+        "disabled:cursor-not-allowed disabled:opacity-40",
+        checked ? "bg-accent" : "bg-surface-2 border border-border"
+      )}
+    >
+      <motion.span
+        layout
+        transition={{ type: "spring", stiffness: 500, damping: 32 }}
+        className={cx("block h-4.5 w-4.5 rounded-full bg-bg shadow-sm", checked ? "ml-[22px]" : "ml-1")}
+      />
+    </button>
+  );
 }
 
 type BadgeTone = "default" | "success" | "danger" | "warning" | "accent";
@@ -233,6 +273,49 @@ export function Modal({
         </div>
         <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 py-6">{children}</div>
       </div>
+    </div>
+  );
+}
+
+/** Wraps a settings row/panel so the global search palette
+ * (components/global-search.tsx) can land on it: when `active` flips true —
+ * because the URL's `?setting=` param matches `id` — this scrolls the row
+ * into view and gives it a brief accent flash, then settles back to plain.
+ * The `data-setting-key` attribute is there mainly for debugging/tests;
+ * scrolling itself uses the ref, not a DOM query. */
+export function SettingHighlight({
+  id,
+  active,
+  className,
+  children,
+}: {
+  id: string;
+  active: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [flash, setFlash] = useState(false);
+
+  useEffect(() => {
+    if (!active) return;
+    ref.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setFlash(true);
+    const t = setTimeout(() => setFlash(false), 2200);
+    return () => clearTimeout(t);
+  }, [active]);
+
+  return (
+    <div
+      ref={ref}
+      data-setting-key={id}
+      className={cx(
+        "rounded-xl transition-colors duration-700",
+        flash && "bg-accent-soft ring-2 ring-accent/50",
+        className
+      )}
+    >
+      {children}
     </div>
   );
 }

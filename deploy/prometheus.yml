@@ -35,3 +35,7 @@ scrape_configs:
         labels: { shard: shard-a }
       - targets: ["worker-outbox-b:9100"]
         labels: { shard: shard-b }
+
+  - job_name: og-service
+    static_configs:
+      - targets: ["og-service:9100"]

@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/darkoatanasovski/chat/internal/apps"
 	"github.com/darkoatanasovski/chat/internal/blocks"
 	"github.com/darkoatanasovski/chat/internal/events"
 	"github.com/darkoatanasovski/chat/internal/membership"
@@ -81,6 +82,10 @@ func main() {
 	dedup := realtime.NewDedup(redisClient, cfg.KafkaConsumerGroup, m)
 	membershipRepo := membership.NewRepo(controlPool)
 	blocksRepo := blocks.NewRepo(controlPool)
+	// Backs ConnectHandler's typing_events/connection_events capability
+	// gates — the same Repo cmd/api uses for every other per-app setting,
+	// just reached from the gateway process instead.
+	appsRepo := apps.NewRepo(controlPool)
 	// Presence: same Service cmd/api uses (internal/users), just wired up
 	// here too so a live WebSocket connection is itself a first-class
 	// activity signal, not only the REST mutation handlers.
@@ -90,7 +95,11 @@ func main() {
 
 	delivery := realtime.NewDelivery(hub, cache, membershipRepo, blocksCache, blocksRepo, registry, publisher, log)
 
-	consumerTopics := []string{events.TopicMessageCreated, events.TopicReactionUpdated, events.TopicReadUpdated}
+	consumerTopics := []string{
+		events.TopicMessageCreated, events.TopicReactionUpdated, events.TopicReadUpdated,
+		events.TopicPollVoteUpdated, events.TopicMessageEdited, events.TopicMessagePinUpdated,
+		events.TopicCustomEvent, events.TopicMessageReminderDue, events.TopicUnreadReminderDue,
+	}
 	consumer := kafkastorage.NewConsumer(cfg.KafkaBrokers, consumerTopics, cfg.KafkaConsumerGroup)
 	fanout := realtime.NewFanout(consumer, delivery, dedup, m, log)
 	fanout.SetShards(cfg.FanoutShards)
@@ -114,7 +123,7 @@ func main() {
 		}
 	}()
 
-	connectHandler := realtime.NewConnectHandler(signer, hub, registry, delivery, gatewayID, m, log, presenceSvc)
+	connectHandler := realtime.NewConnectHandler(signer, hub, registry, delivery, gatewayID, m, log, presenceSvc, appsRepo)
 
 	mux := http.NewServeMux()
 	mux.Handle("/connect", connectHandler)

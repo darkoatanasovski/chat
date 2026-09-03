@@ -10,6 +10,7 @@ import {
   FolderPlus,
   Hash,
   History,
+  Languages,
   Pencil,
   Pin,
   PinOff,
@@ -49,6 +50,7 @@ import {
   removeReaction,
   renameBookmarkFolder,
   sendMessage,
+  translateMessage,
   unpinMessage,
   votePoll,
   ApiError,
@@ -217,6 +219,14 @@ export function ChatPanel({
   const [bookmarkFolders, setBookmarkFolders] = useState<BookmarkFolder[]>([]);
   const [bookmarksPanelOpen, setBookmarksPanelOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+  // Per-message translation result, keyed by message_id — set once a
+  // translate request resolves (see translateMessageAction) and shown
+  // inline under the original body with a "Hide translation" toggle;
+  // absent for a message that's never been translated. Private to this
+  // viewer only, same as bookmarks: the server never broadcasts a
+  // translation to other channel members.
+  const [messageTranslations, setMessageTranslations] = useState<Record<string, { text: string; sourceLang: string; targetLang: string; cached: boolean }>>({});
+  const [translatingMessageId, setTranslatingMessageId] = useState<string | null>(null);
   const [lastSent, setLastSent] = useState<{ clientMessageId: string; body: string; parentId?: string } | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
@@ -424,6 +434,7 @@ export function ChatPanel({
     setMyReactions({});
     setReadState({});
     setTypingUsers({});
+    setMessageTranslations({});
     setLog([]);
     atBottomRef.current = true;
     lastMarkedReadSequenceRef.current = 0;
@@ -572,6 +583,28 @@ export function ChatPanel({
       });
     } catch (err) {
       appendLog(err instanceof ApiError ? `reaction failed: ${err.status} ${err.message}` : `reaction failed: ${err}`);
+    }
+  }
+
+  // translateMessageAction requires the app's "translations" capability
+  // (403 otherwise, same as any other gated capability here — this UI has
+  // no client-side awareness of which capabilities are on, it just shows
+  // the button and surfaces whatever the server says). A 403/503/502 all
+  // get logged the same way a failed reaction does rather than shown as a
+  // dedicated error UI, since this is a demo harness, not the product.
+  async function translateMessageAction(messageId: string, targetLang: string) {
+    setTranslatingMessageId(messageId);
+    try {
+      const result = await translateMessage(apiBase, profile.token, channelId, messageId, targetLang);
+      setMessageTranslations((prev) => ({
+        ...prev,
+        [messageId]: { text: result.translated_text, sourceLang: result.source_lang, targetLang: result.target_lang, cached: result.cached },
+      }));
+      appendLog(`translated message ${messageId.slice(0, 8)}… to ${targetLang}${result.cached ? " (cached)" : ""}`);
+    } catch (err) {
+      appendLog(err instanceof ApiError ? `translate failed: ${err.status} ${err.message}` : `translate failed: ${err}`);
+    } finally {
+      setTranslatingMessageId(null);
     }
   }
 
@@ -1092,6 +1125,26 @@ export function ChatPanel({
                       ) : (
                         <div className="text-sm leading-relaxed break-words">{m.body}</div>
                       )}
+                      {!m.poll_id && messageTranslations[m.message_id] && (
+                        <div className="mt-1.5 flex items-start gap-1.5 border-t border-white/10 pt-1.5 text-sm leading-relaxed break-words text-inherit/90">
+                          <Languages className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-60" />
+                          <div>
+                            {messageTranslations[m.message_id].text}
+                            <button
+                              onClick={() =>
+                                setMessageTranslations((prev) => {
+                                  const next = { ...prev };
+                                  delete next[m.message_id];
+                                  return next;
+                                })
+                              }
+                              className="ml-2 text-[10.5px] font-medium opacity-60 underline-offset-2 hover:underline"
+                            >
+                              Hide translation
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                     {editingMessageId !== m.message_id && (
                       <div className={cx("flex items-center gap-1", isYou && "flex-row-reverse")}>
@@ -1117,6 +1170,12 @@ export function ChatPanel({
                           mirrored={!isYou}
                           onToggle={(reaction) => toggleReaction(m.message_id, reaction)}
                         />
+                        {!m.poll_id && (
+                          <MessageTranslate
+                            busy={translatingMessageId === m.message_id}
+                            onSelect={(lang) => translateMessageAction(m.message_id, lang)}
+                          />
+                        )}
                         <button
                           onClick={() => togglePin(m)}
                           className={cx(
@@ -1483,6 +1542,97 @@ function MessageReactions({
                 title={reaction}
               >
                 {reactionGlyph(reaction)}
+              </button>
+            ))}
+          </div>,
+          document.body
+        )}
+    </div>
+  );
+}
+
+// TRANSLATE_LANGUAGES is a short, fixed picker list for the demo — the API
+// itself accepts any BCP-47-ish code the configured provider supports
+// (see cmd/api's langPattern), this is just a convenient subset to click.
+const TRANSLATE_LANGUAGES: { code: string; label: string }[] = [
+  { code: "es", label: "Spanish" },
+  { code: "fr", label: "French" },
+  { code: "de", label: "German" },
+  { code: "pt", label: "Portuguese" },
+  { code: "ja", label: "Japanese" },
+  { code: "zh-Hans", label: "Chinese (Simplified)" },
+  { code: "ar", label: "Arabic" },
+  { code: "hi", label: "Hindi" },
+];
+
+// MessageTranslate mirrors MessageReactions' trigger+portal-popover shape:
+// a Languages trigger reveals a short fixed language list instead of an
+// emoji palette. Unlike reactions this has no persistent per-message state
+// of its own (the parent's messageTranslations map owns that) — this
+// component is purely "pick a language, call onSelect."
+function MessageTranslate({ busy, onSelect }: { busy: boolean; onSelect: (lang: string) => void }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerPos, setPickerPos] = useState<{ top: number; left: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const pickerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!pickerOpen) return;
+    function place() {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (rect) setPickerPos({ top: rect.top - 8, left: rect.left });
+    }
+    place();
+    function handlePointerDown(e: PointerEvent) {
+      const target = e.target as Node;
+      if (triggerRef.current?.contains(target) || pickerRef.current?.contains(target)) return;
+      setPickerOpen(false);
+    }
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [pickerOpen]);
+
+  return (
+    <div className="relative">
+      <button
+        ref={triggerRef}
+        onClick={() => setPickerOpen((v) => !v)}
+        disabled={busy}
+        className={cx(
+          "grid h-6 w-6 place-items-center rounded-full border text-text-faint opacity-0 transition-all duration-150 group-hover:opacity-100 disabled:cursor-wait",
+          pickerOpen
+            ? "opacity-100 border-accent bg-accent-soft text-accent"
+            : "border-border-soft hover:border-accent/60 hover:bg-accent-soft hover:text-accent"
+        )}
+        title="Translate"
+      >
+        <Languages className="h-3.5 w-3.5" />
+      </button>
+
+      {pickerOpen &&
+        pickerPos &&
+        createPortal(
+          <div
+            ref={pickerRef}
+            className="animate-fade-in-up fixed z-[100] flex -translate-y-full flex-col gap-0.5 rounded-lg border border-border bg-surface-2 p-1 shadow-xl"
+            style={{ top: pickerPos.top, left: pickerPos.left }}
+          >
+            {TRANSLATE_LANGUAGES.map(({ code, label }) => (
+              <button
+                key={code}
+                onClick={() => {
+                  onSelect(code);
+                  setPickerOpen(false);
+                }}
+                className="whitespace-nowrap rounded-md px-2.5 py-1 text-left text-xs text-text-muted transition-colors duration-150 hover:bg-white/[0.06] hover:text-text"
+              >
+                {label}
               </button>
             ))}
           </div>,

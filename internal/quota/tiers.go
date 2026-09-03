@@ -58,6 +58,16 @@ const (
 	// "shared state, needs its own tight bucket" reason to split folder
 	// actions from bookmark actions into separate capabilities.
 	CapabilityBookmarkWrite = "bookmark.write"
+	// CapabilityTranslationRequest gates POST
+	// /channels/{id}/messages/{message_id}/translate — a request that can
+	// hit a paid third-party provider (internal/translations) on a cache
+	// miss, so unlike most other capabilities here this one exists as much
+	// to bound real external cost as to bound abuse. A caller can't tell in
+	// advance whether a request will be a cache hit or miss, so both
+	// consume this same budget — the same "gate the whole bucket, not just
+	// the expensive half" reasoning as CapabilityReactionWrite covering
+	// both add and remove.
+	CapabilityTranslationRequest = "translation.request"
 )
 
 type TierLimits struct {
@@ -77,6 +87,13 @@ type TierLimits struct {
 	MessageEditsPerMinute int `yaml:"message_edits_per_minute"`
 	MessagePinsPerMinute  int `yaml:"message_pins_per_minute"`
 	BookmarksPerMinute    int `yaml:"bookmarks_per_minute"`
+	// TranslationsPerMinute is set well below every other per-minute limit
+	// at every tier (see deploy/tiers.yaml) — unlike a reaction or a
+	// bookmark, a translation request can cost real money against the
+	// configured provider (internal/translations), so it gets a
+	// deliberately tighter budget rather than mirroring a lightweight
+	// action's limit the way most of the fields above do.
+	TranslationsPerMinute int `yaml:"translations_per_minute"`
 	// RetentionDays is how long a message survives before the per-shard
 	// retention sweep (cmd/worker) deletes it. <= 0 means "keep forever" —
 	// never applies to rate/resource checks, only to that background job.

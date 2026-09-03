@@ -40,6 +40,23 @@ func (a *App) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Gated on this app's "read_events" channel capability — read live
+	// (never cached), same discipline as MessageEditEnabled's check in
+	// handleEditMessage. Only the write side (marking read) is gated;
+	// handleListReadState still reads back whatever watermark already
+	// exists, the same way a disabled capability never retroactively
+	// hides state a client already committed while it was on.
+	app, err := a.appsRepo.Get(r.Context(), identity.AppID)
+	if err != nil {
+		a.log.Error("load app for read_events capability check", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to mark read")
+		return
+	}
+	if !app.ChannelCapabilities.ReadEvents {
+		writeError(w, http.StatusForbidden, "read events are not enabled for this app")
+		return
+	}
+
 	tier, err := a.appTiers.TierForApp(r.Context(), identity.AppID)
 	if err != nil {
 		a.log.Error("resolve app tier", "error", err)

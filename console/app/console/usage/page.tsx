@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { BarChart3, ExternalLink, MessageCircle, Users as UsersIcon } from "lucide-react";
-import { getUsage, ApiError } from "@/lib/api";
-import type { Usage } from "@/lib/types";
+import { ApiError } from "@/lib/api";
+import { useUsageQuery } from "@/lib/queries";
 import { ConsoleShell, useSession } from "@/components/shell";
 import { AnimatedNumber, ErrorBanner, Panel, Skeleton } from "@/components/ui";
 
@@ -20,14 +19,9 @@ export default function UsagePage() {
 
 function UsageView() {
   const { session } = useSession();
-  const [usage, setUsage] = useState<Usage | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    getUsage(session.token)
-      .then(setUsage)
-      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
-  }, [session.token]);
+  const usageQuery = useUsageQuery(session.token);
+  const usage = usageQuery.data;
+  const error = usageQuery.error ? (usageQuery.error instanceof ApiError ? usageQuery.error.message : String(usageQuery.error)) : null;
 
   return (
     <div>
@@ -54,7 +48,7 @@ function UsageView() {
         </div>
       )}
 
-      {usage === null && !error && (
+      {!usage && !error && (
         <div className="flex flex-col gap-4">
           <Skeleton className="h-32" />
           <Skeleton className="h-40" />

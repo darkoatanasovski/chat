@@ -19,6 +19,17 @@ x-common-env: &common-env
   PEER_API_EU_URL: http://api-eu:8080
   PEER_API_US_URL: http://api-us:8080
   PEER_API_ASIA_URL: http://api-asia:8080
+  # Only cmd/api actually calls this (url_enrichment's enrichLinkPreview) —
+  # harmless for gateway/worker, which load the same shared config but
+  # never read this field.
+  OG_SERVICE_URL: http://og-service:8080
+  # Only cmd/api calls this (the "translations" capability's
+  # handleTranslateMessage) — harmless for gateway/worker. Unset/empty is a
+  # valid "translation not configured" state (internal/translations.Client
+  # reports it as a 503 rather than failing startup), so this is safe to
+  # leave blank in any environment that isn't exercising translations.
+  AZURE_TRANSLATOR_KEY: ${AZURE_TRANSLATOR_KEY}
+  AZURE_TRANSLATOR_REGION: ${AZURE_TRANSLATOR_REGION}
 
 services:
   postgres-control:
@@ -141,12 +152,32 @@ services:
     volumes: ["../deploy/sentinel/sentinel-3.conf:/etc/valkey/sentinel.conf"]
     ports: ["26381:26379"]
 
+  # Standalone service (INSTRUCTIONS.md-style separation): given a URL,
+  # fetches its OpenGraph metadata and caches it in-memory for
+  # OG_CACHE_TTL (default 1h). No Postgres/Kafka/Valkey dependency — see
+  # internal/opengraph and cmd/ogservice. api-eu/us/asia call it over HTTP
+  # for the "url_enrichment" capability instead of scraping pages
+  # themselves; a single instance is enough since it holds no state any
+  # other service needs to agree on, but it's cheap to run more of behind
+  # a load balancer if fetch volume ever warrants it (each instance's
+  # cache is independent — a miss just costs one more outbound fetch).
+  og-service:
+    build:
+      <<: *app-build
+      args:
+        SERVICE: ogservice
+    restart: unless-stopped
+    environment:
+      HTTP_ADDR: ":8080"
+      METRICS_ADDR: ":9100"
+    ports: ["8095:8080"]
+
   api-eu:
     build:
       <<: *app-build
       args:
         SERVICE: api
-    depends_on: [postgres-control, postgres-shard-a, postgres-shard-b, valkey, kafka]
+    depends_on: [postgres-control, postgres-shard-a, postgres-shard-b, valkey, kafka, og-service]
     restart: unless-stopped
     environment:
       <<: *common-env
@@ -163,7 +194,7 @@ services:
       <<: *app-build
       args:
         SERVICE: api
-    depends_on: [postgres-control, postgres-shard-a, postgres-shard-b, valkey, kafka]
+    depends_on: [postgres-control, postgres-shard-a, postgres-shard-b, valkey, kafka, og-service]
     restart: unless-stopped
     environment:
       <<: *common-env
@@ -180,7 +211,7 @@ services:
       <<: *app-build
       args:
         SERVICE: api
-    depends_on: [postgres-control, postgres-shard-a, postgres-shard-b, valkey, kafka]
+    depends_on: [postgres-control, postgres-shard-a, postgres-shard-b, valkey, kafka, og-service]
     restart: unless-stopped
     environment:
       <<: *common-env

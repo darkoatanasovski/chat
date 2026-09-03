@@ -57,6 +57,16 @@ func main() {
 		log.Error("retention sweeper not started", "error", err)
 	}
 
+	// message_reminders and unread_reminders (the "message_reminders" and
+	// "unread_reminders" capabilities) are both background jobs of the
+	// same non-critical class as retention — a failure to start either one
+	// logs and lets the outbox publisher keep running rather than taking
+	// the whole worker instance down.
+	startMessageReminderPoller(ctx, log, pool)
+	if err := startUnreadReminderSweeper(ctx, cfg, log, m, pool); err != nil {
+		log.Error("unread reminder sweeper not started", "error", err)
+	}
+
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", metrics.Handler())
 	mux.Handle("/healthz", health.Handler(map[string]health.Checker{
