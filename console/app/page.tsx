@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
-import { Boxes, Check, Gauge, Globe2, KeyRound, MessagesSquare, ShieldOff, SmilePlus, Users } from "lucide-react";
+import { Boxes, Check, FlaskConical, Globe2, Languages, MessagesSquare, Pin, Radio, ShieldOff, SlidersHorizontal, Users, Vote } from "lucide-react";
 import { HeroIllustration } from "@/components/landing/hero-illustration";
 import { PLANS } from "@/lib/plans";
 
 const TITLE = "Real-time chat infrastructure, built to go global";
 const DESCRIPTION =
-  "Add multi-region, real-time chat to your product in an afternoon. Channels, membership, reactions, blocking, and delivery that's already fast in Europe, North America, and Asia — one API, no per-region deploys.";
+  "Add multi-region, real-time chat to your product in an afternoon — channels and threads, reactions and polls, search, translation, moderation, and presence, delivered fast across Europe, North America, and Asia from a single API.";
 
 export const metadata: Metadata = {
   title: TITLE,
@@ -39,12 +39,15 @@ const JSON_LD = {
 };
 
 const FEATURES = [
-  { icon: Globe2, title: "Global by default", desc: "Every app spans EU, US, and Asia from the first message — no region picker, no per-region deploys." },
-  { icon: Users, title: "Channels & membership", desc: "Public and private channels with real membership — add, remove, and list members through one API." },
-  { icon: SmilePlus, title: "Reactions & read receipts", desc: "The details that make chat feel alive, without you having to build the plumbing for them." },
-  { icon: ShieldOff, title: "Blocking & moderation", desc: "Bidirectional user blocking enforced at delivery time, not bolted on as a client-side filter." },
-  { icon: Gauge, title: "Tier-based quotas", desc: "Predictable limits per plan, enforced server-side, with a usage dashboard your team can actually read." },
-  { icon: KeyRound, title: "Simple REST API", desc: "Opaque API key/secret credentials, revoked instantly, no OAuth dance required to send a message." },
+  { icon: Globe2, title: "Global by default", desc: "Every app spans EU, US, and Asia from the first message. Delivery routes through the region closest to the sender — no region picker, no per-region deploys." },
+  { icon: Radio, title: "Real-time everything", desc: "A WebSocket gateway with typing indicators, online presence, read receipts, message reminders, and connect/disconnect events out of the box." },
+  { icon: MessagesSquare, title: "Rich messaging", desc: "Threads and replies, quotes, edits, file attachments, location sharing, and automatic link previews — the whole surface of a modern chat." },
+  { icon: Vote, title: "Reactions & polls", desc: "Eight built-in reactions and single- or multi-select polls you can attach to any message, with live tallies pushed to every member." },
+  { icon: Pin, title: "Pins & bookmarks", desc: "Channel-shared pins everyone sees, plus private bookmark folders each user keeps to themselves." },
+  { icon: Languages, title: "Search & translation", desc: "Full-text search across a channel's messages and on-demand translation into any language, cached per message so repeat reads are free." },
+  { icon: ShieldOff, title: "Moderation & safety", desc: "Bidirectional blocking enforced at delivery time, per-channel mutes, and approve-before-send queues for pending messages." },
+  { icon: SlidersHorizontal, title: "Per-app capabilities", desc: "Toggle around twenty chat features on or off per app, so each product exposes exactly the surface it needs — enforced server-side." },
+  { icon: FlaskConical, title: "Interactive playground", desc: "Try every feature against your own app right from the console, as real end-users, and copy the exact SDK, fetch, or cURL snippet." },
 ] as const;
 
 const PERSONAS = [
@@ -289,6 +292,7 @@ function ConsolePreview() {
             {[
               { label: "Overview", active: true },
               { label: "Apps" },
+              { label: "Playground" },
               { label: "Team" },
               { label: "Usage" },
               { label: "Billing" },

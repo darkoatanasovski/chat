@@ -6,15 +6,13 @@ import { Check, Clock, Copy, Mail, Plus, Trash2, Users } from "lucide-react";
 import { ApiError } from "@/lib/api";
 import { useCreateInviteMutation, useInvitesQuery, useRemoveTeamMemberMutation, useTeamQuery } from "@/lib/queries";
 import type { Invite } from "@/lib/types";
-import { ConsoleShell, useSession } from "@/components/shell";
+import { useSession } from "@/components/shell";
 import { useToast } from "@/components/toast";
 import { Avatar, Badge, Button, ErrorBanner, Input, Label, Modal, Panel, Select, Skeleton } from "@/components/ui";
 
 export default function TeamPage() {
   return (
-    <ConsoleShell>
       <TeamView />
-    </ConsoleShell>
   );
 }
 

@@ -23,7 +23,7 @@ import {
   useUsageQuery,
 } from "@/lib/queries";
 import type { CreatedApp } from "@/lib/types";
-import { ConsoleShell, useSession } from "@/components/shell";
+import { useSession } from "@/components/shell";
 import { WorldMap } from "@/components/worldmap";
 import { AnimatedNumber, Button, ErrorBanner, Input, Label, Panel, Skeleton, Sparkline, WizardProgress } from "@/components/ui";
 
@@ -36,9 +36,7 @@ function regionLabel(region: string) {
 
 export default function OverviewPage() {
   return (
-    <ConsoleShell>
       <OverviewView />
-    </ConsoleShell>
   );
 }
 

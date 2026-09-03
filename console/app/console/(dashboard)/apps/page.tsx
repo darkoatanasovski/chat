@@ -6,7 +6,7 @@ import { Boxes, Check, Copy, KeyRound, Plus } from "lucide-react";
 import { ApiError } from "@/lib/api";
 import { useAppsMessagesDailyQuery, useAppsQuery, useCreateAppMutation } from "@/lib/queries";
 import type { CreatedApp } from "@/lib/types";
-import { ConsoleShell, useSession } from "@/components/shell";
+import { useSession } from "@/components/shell";
 import { useToast } from "@/components/toast";
 import { Button, ErrorBanner, Input, Label, Modal, Panel, Skeleton, Sparkline } from "@/components/ui";
 
@@ -19,9 +19,7 @@ const ZERO_DAILY = Array<number>(DAILY_WINDOW).fill(0);
 
 export default function AppsPage() {
   return (
-    <ConsoleShell>
       <AppsView />
-    </ConsoleShell>
   );
 }
 

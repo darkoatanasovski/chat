@@ -46,7 +46,7 @@ import {
   useUpdateAppMutation,
 } from "@/lib/queries";
 import type { AppSummary, ChannelCapabilities, Credential, DashboardChannel, DashboardPoll, EndUser, MessagesUsage, UpdateAppRequest } from "@/lib/types";
-import { ConsoleShell, useSession } from "@/components/shell";
+import { useSession } from "@/components/shell";
 import { useToast } from "@/components/toast";
 import { CAPABILITY_GROUPS, KNOWN_COMMANDS } from "@/lib/capabilities";
 import {
@@ -70,9 +70,7 @@ import {
 
 export default function AppDetailPage() {
   return (
-    <ConsoleShell>
       <AppDetailView />
-    </ConsoleShell>
   );
 }
 

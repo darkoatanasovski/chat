@@ -15,7 +15,7 @@ import { Boxes, FlaskConical } from "lucide-react";
 import { ApiError } from "@/lib/api";
 import { useAppsQuery, useChannelMembersQuery } from "@/lib/queries";
 import { defaultValues, FEATURE_GROUPS, FEATURES, featureById, type Values } from "@/lib/playground/features";
-import { ConsoleShell, useSession } from "@/components/shell";
+import { useSession } from "@/components/shell";
 import { Button, ErrorBanner, Panel, Skeleton, cx } from "@/components/ui";
 import { FeaturePanel, type UserOption } from "@/components/playground/feature-panel";
 import { LivePanel } from "@/components/playground/live-panel";
@@ -28,11 +28,9 @@ const DEFAULT_FEATURE = "message.send";
 
 export default function PlaygroundPage() {
   return (
-    <ConsoleShell>
       <Suspense fallback={null}>
         <PlaygroundView />
       </Suspense>
-    </ConsoleShell>
   );
 }
 

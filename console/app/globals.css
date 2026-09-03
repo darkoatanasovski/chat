@@ -34,37 +34,65 @@ body {
   font-size: 15px;
 }
 
-/* Console theme — flat, pastel DARK palette for the authenticated
- * dashboard (app/console/**, wrapped by app/console/layout.tsx) plus
- * login/signup, scoped to this class so the marketing site at app/page.tsx
- * keeps its own separate hero unchanged. Same token names as the @theme
- * block above, just redefined: every `bg-*`/`text-*`/`border-*` utility
- * already resolves through these custom properties, so nothing else has
- * to change for the cascade to repaint. Soft/muted (not neon) hues keep
- * the "pastel" character on a dark ground — a deliberately different mood
- * from the @theme block's brighter accent green. */
+/* Console theme — the authenticated dashboard (app/console/**, wrapped by
+ * app/console/layout.tsx) plus login/signup. It intentionally uses the SAME
+ * near-black background + single green accent palette as the marketing site
+ * (the @theme block above) so the console and landing page read as one
+ * product. The class is still scoped here (rather than deleted) so the two
+ * can diverge again later without touching every page; for now the values
+ * mirror @theme. Every `bg-*`/`text-*`/`border-*` utility resolves through
+ * these custom properties, so repainting the whole dashboard is just this
+ * block. Danger/warning/info stay distinct because they carry meaning
+ * (destructive actions, near-limit warnings) that green can't convey. */
 .console-theme {
-  --color-bg: #14131c;
-  --color-surface: #1c1b28;
-  --color-surface-2: #242332;
-  --color-border: #322f45;
-  --color-border-soft: #2a2838;
-  --color-text: #eeecf6;
-  --color-text-muted: #a29cc0;
-  --color-text-faint: #6f6a8a;
+  --color-bg: #08090a;
+  --color-surface: #101211;
+  --color-surface-2: #171a17;
+  --color-border: #242920;
+  --color-border-soft: #181c16;
+  --color-text: #eef2ec;
+  --color-text-muted: #99a69b;
+  --color-text-faint: #5c675e;
 
-  --color-accent: #9c8cf0;
-  --color-accent-strong: #b3a5f5;
-  --color-accent-soft: rgb(156 140 240 / 0.16);
+  --color-accent: #2ee878;
+  --color-accent-strong: #17c765;
+  --color-accent-soft: rgb(46 232 120 / 0.14);
 
-  --color-success: #6fd9b0;
-  --color-success-soft: rgb(111 217 176 / 0.14);
-  --color-danger: #f0897f;
-  --color-danger-soft: rgb(240 137 127 / 0.14);
-  --color-warning: #f0c178;
-  --color-warning-soft: rgb(240 193 120 / 0.14);
-  --color-info: #7ec8f0;
-  --color-info-soft: rgb(126 200 240 / 0.14);
+  --color-success: #2ee878;
+  --color-success-soft: rgb(46 232 120 / 0.12);
+  --color-danger: #fb7469;
+  --color-danger-soft: rgb(251 116 105 / 0.12);
+  --color-warning: #f2b33d;
+  --color-warning-soft: rgb(242 179 61 / 0.12);
+  --color-info: #38bdf8;
+  --color-info-soft: rgb(56 189 248 / 0.12);
+}
+
+/* Flat dashboard: neutral FOUR-SIDED box outlines (cards, panels, inputs,
+ * modals, code blocks) are invisible at rest, so a box reads as its filled
+ * surface on the black ground rather than an outlined frame. Deliberately
+ * NOT touched:
+ *   - hover/focus/active borders — they use a different color token
+ *     (border-accent, border-text-faint), and this rule's specificity is
+ *     pinned below theirs so they still win when the element is interacted
+ *     with ("on hover should stay as is");
+ *   - one-sided dividers (border-t / border-b / border-r ...) — they carry
+ *     no all-sides `border` class, so :where(.border) never matches them and
+ *     the sidebar/header/section separators stay intact;
+ *   - semantically coloured boxes (border-danger, border-accent, …) — they
+ *     don't carry the neutral border-border / border-border-soft class.
+ * Specificity is kept at (0,1,1): the element type contributes 0,0,1 while
+ * :where() zeroes the theme scope and the four-sided guard, so a Tailwind
+ * hover:/focus: variant (0,2,0) still overrides it. It lives in @layer
+ * utilities so that specificity — not layer order — governs against those
+ * variants. Scoped to .console-theme, so the marketing site is untouched. */
+@layer utilities {
+  :where(.console-theme)
+    :is(a, aside, button, div, footer, form, header, input, label, li, main, nav, ol, pre, section, select, textarea, ul):where(.border).border-border,
+  :where(.console-theme)
+    :is(a, aside, button, div, footer, form, header, input, label, li, main, nav, ol, pre, section, select, textarea, ul):where(.border).border-border-soft {
+    border-color: transparent;
+  }
 }
 
 * {
