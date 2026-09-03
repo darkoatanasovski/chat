@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowUpRight,
@@ -33,6 +34,10 @@ const DAILY_WINDOW = 7;
 function regionLabel(region: string) {
   return { eu: "Europe", us: "North America", asia: "Asia Pacific" }[region] ?? region;
 }
+
+// framer-motion + Next <Link>: keeps the per-row fade-in while navigating
+// client-side instead of doing a full page reload.
+const MotionLink = motion.create(Link);
 
 export default function OverviewPage() {
   return (
@@ -113,15 +118,15 @@ function OverviewView() {
         <Panel animate={false}>
           <div className="mb-5 flex items-center justify-between">
             <h2 className="text-base font-semibold text-text">Your apps</h2>
-            <a href="/console/apps" className="flex items-center gap-1 text-sm text-text-muted transition-colors duration-150 hover:text-accent">
+            <Link href="/console/apps" className="flex items-center gap-1 text-sm text-text-muted transition-colors duration-150 hover:text-accent">
               View all
               <ArrowUpRight className="h-3.5 w-3.5" />
-            </a>
+            </Link>
           </div>
           {usage.apps_detail.length === 0 && <p className="text-[15px] text-text-muted">No apps yet — create your first one to get started.</p>}
           <div className="flex flex-col gap-2">
             {usage.apps_detail.slice(0, 5).map((app, i) => (
-              <motion.a
+              <MotionLink
                 key={app.app_id}
                 href={`/console/apps/${app.app_id}`}
                 initial={{ opacity: 0, y: 6 }}
@@ -143,7 +148,7 @@ function OverviewView() {
                     <span className="font-mono text-[15px] text-text">{app.channels}</span>
                   </div>
                 </div>
-              </motion.a>
+              </MotionLink>
             ))}
           </div>
         </Panel>

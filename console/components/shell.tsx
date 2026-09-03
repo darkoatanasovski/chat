@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
@@ -91,7 +92,7 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
               const Icon = item.icon;
               const active = pathname?.startsWith(item.href);
               return (
-                <a
+                <Link
                   key={item.href}
                   href={item.href}
                   className={cx(
@@ -108,7 +109,7 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
                   )}
                   <Icon className="relative h-5 w-5" strokeWidth={2} />
                   <span className="relative">{item.label}</span>
-                </a>
+                </Link>
               );
             })}
           </nav>
@@ -141,11 +142,11 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
               </div>
               <GlobalSearch />
             </div>
-            <a href="/console/billing">
+            <Link href="/console/billing">
               <Badge tone="accent" className="cursor-pointer transition-opacity duration-150 hover:opacity-80">
                 {session.org.tier}
               </Badge>
-            </a>
+            </Link>
           </header>
           <main className="min-h-0 flex-1 overflow-y-auto px-10 py-9">{children}</main>
         </div>
@@ -192,9 +193,9 @@ function UsageGauge({ usage }: { usage: Usage }) {
           Apps on <span className="text-text-muted">{usage.tier}</span>
         </div>
         {nearLimit && usage.tier !== "ENTERPRISE" && (
-          <a href="/console/billing" className="mt-0.5 block text-[11px] text-warning underline-offset-2 hover:underline">
+          <Link href="/console/billing" className="mt-0.5 block text-[11px] text-warning underline-offset-2 hover:underline">
             Nearing your plan limit — upgrade
-          </a>
+          </Link>
         )}
       </div>
     </div>

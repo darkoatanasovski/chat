@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -116,10 +117,10 @@ function AppDetailView() {
 
   return (
     <div>
-      <a href="/console/apps" className="mb-6 inline-flex items-center gap-1.5 text-[15px] text-text-muted transition-colors duration-150 hover:text-text">
+      <Link href="/console/apps" className="mb-6 inline-flex items-center gap-1.5 text-[15px] text-text-muted transition-colors duration-150 hover:text-text">
         <ArrowLeft className="h-4 w-4" />
         Apps
-      </a>
+      </Link>
 
       <div className="mb-8 flex items-center gap-3.5">
         <span className="grid h-12 w-12 place-items-center rounded-full bg-accent-soft text-accent">
@@ -195,6 +196,30 @@ function writeStoredLanguage(appId: number, lang: SdkLanguage) {
     window.localStorage.setItem(`${SDK_LANG_STORAGE_PREFIX}${appId}`, lang);
   } catch {
     // See readStoredLanguage — non-fatal if storage isn't available.
+  }
+}
+
+// The SDK panel's open/closed state is remembered per app too, so it
+// survives navigating away and back (the page content remounts on
+// navigation — only the shell in the (dashboard) layout persists). null
+// means "no explicit choice yet", so the message-count auto-collapse below
+// still applies on a first visit.
+const SDK_COLLAPSE_STORAGE_PREFIX = "chat-console:sdk-collapsed:";
+
+function readStoredCollapsed(appId: number): boolean | null {
+  try {
+    const stored = window.localStorage.getItem(`${SDK_COLLAPSE_STORAGE_PREFIX}${appId}`);
+    return stored === null ? null : stored === "1";
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredCollapsed(appId: number, collapsed: boolean) {
+  try {
+    window.localStorage.setItem(`${SDK_COLLAPSE_STORAGE_PREFIX}${appId}`, collapsed ? "1" : "0");
+  } catch {
+    // Non-fatal if storage isn't available.
   }
 }
 
@@ -374,6 +399,17 @@ function SdkSetupPanel({ appId }: { appId: number }) {
     if (stored) setLanguage(stored);
   }, [appId]);
 
+  // Restore a remembered open/closed choice. If one exists, treat it as the
+  // user's explicit preference so the message-count auto-collapse below
+  // doesn't override it on this or a later visit.
+  useEffect(() => {
+    const stored = readStoredCollapsed(appId);
+    if (stored !== null) {
+      userToggledRef.current = true;
+      setCollapsed(stored);
+    }
+  }, [appId]);
+
   // "At least one request from the client" — reuse the same per-app
   // message totals the Apps grid and Overview page already fetch (and, by
   // the time someone's looking at an app's own page, have usually already
@@ -396,7 +432,11 @@ function SdkSetupPanel({ appId }: { appId: number }) {
         <button
           onClick={() => {
             userToggledRef.current = true;
-            setCollapsed((v) => !v);
+            setCollapsed((v) => {
+              const next = !v;
+              writeStoredCollapsed(appId, next);
+              return next;
+            });
           }}
           className="flex w-full items-center justify-between gap-3 text-left"
         >

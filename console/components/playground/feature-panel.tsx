@@ -3,6 +3,7 @@
 // One feature's form, Run button, result, and code snippets — rendered for
 // whichever catalog entry (lib/playground/features.ts) is selected.
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Check, Copy, ExternalLink, Play, Settings2 } from "lucide-react";
 import type { AppSummary } from "@/lib/types";
 import { CAPABILITY_GROUPS } from "@/lib/capabilities";
@@ -66,21 +67,21 @@ export function FeaturePanel({
         <div className="mb-1 flex flex-wrap items-center gap-2">
           <h2 className="text-lg font-semibold text-text">{feature.label}</h2>
           {feature.capability && app && (
-            <a
+            <Link
               href={`/console/apps/${app.app_id}?tab=settings&setting=${feature.capability}`}
               title="Open this capability in the app's settings"
             >
               <Badge tone={capOn ? "success" : "warning"} icon={<Settings2 className="h-3 w-3" />} className="cursor-pointer hover:opacity-80">
                 {capabilityLabel(feature.capability)}: {capOn ? "on" : "off"}
               </Badge>
-            </a>
+            </Link>
           )}
           {feature.requiresEdit && app && (
-            <a href={`/console/apps/${app.app_id}?tab=settings&setting=message_edit_enabled`} title="Open Message Editing in the app's settings">
+            <Link href={`/console/apps/${app.app_id}?tab=settings&setting=message_edit_enabled`} title="Open Message Editing in the app's settings">
               <Badge tone={editOn ? "success" : "warning"} icon={<Settings2 className="h-3 w-3" />} className="cursor-pointer hover:opacity-80">
                 Message Editing: {editOn ? "on" : "off"}
               </Badge>
-            </a>
+            </Link>
           )}
           {!feature.build && <Badge tone="default">observe only</Badge>}
         </div>

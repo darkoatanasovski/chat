@@ -10,6 +10,7 @@
 // The catalog itself lives in lib/playground/features.ts; per-app state in
 // components/playground/use-playground.ts.
 import { Suspense, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Boxes, FlaskConical } from "lucide-react";
 import { ApiError } from "@/lib/api";
@@ -147,9 +148,9 @@ function PlaygroundView() {
             <Boxes className="h-6 w-6" />
           </span>
           <p className="text-[15px] text-text-muted">The Playground needs an app to act inside — create your first one.</p>
-          <a href="/console/apps">
+          <Link href="/console/apps">
             <Button variant="primary">Go to Apps</Button>
-          </a>
+          </Link>
         </Panel>
       )}
 
