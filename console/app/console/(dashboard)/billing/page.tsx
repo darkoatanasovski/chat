@@ -4,15 +4,13 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import { Check, Loader2, Sparkles } from "lucide-react";
 import { createBillingCheckout, ApiError } from "@/lib/api";
-import { ConsoleShell, useSession } from "@/components/shell";
+import { useSession } from "@/components/shell";
 import { Button, ErrorBanner, Panel, cx } from "@/components/ui";
 import { PLANS, TIER_RANK, UPGRADABLE_TIERS } from "@/lib/plans";
 
 export default function BillingPage() {
   return (
-    <ConsoleShell>
       <BillingView />
-    </ConsoleShell>
   );
 }
 

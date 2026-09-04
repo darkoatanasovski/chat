@@ -89,6 +89,7 @@ func (a *App) routes() http.Handler {
 	// backend would use programmatically.
 	mux.HandleFunc("GET /dashboard/apps/{app_id}/users", a.instrument("dashboard_list_end_users", a.requireOrgUser(a.handleDashboardListEndUsers)))
 	mux.HandleFunc("POST /dashboard/apps/{app_id}/users", a.instrument("dashboard_create_end_user", a.requireOrgUser(a.handleDashboardCreateEndUser)))
+	mux.HandleFunc("POST /dashboard/apps/{app_id}/users/{user_id}/token", a.instrument("dashboard_mint_end_user_token", a.requireOrgUser(a.handleDashboardMintEndUserToken)))
 	mux.HandleFunc("GET /dashboard/apps/{app_id}/channels", a.instrument("dashboard_list_channels", a.requireOrgUser(a.handleDashboardListChannels)))
 	mux.HandleFunc("POST /dashboard/apps/{app_id}/channels", a.instrument("dashboard_create_channel", a.requireOrgUser(a.handleDashboardCreateChannel)))
 	mux.HandleFunc("GET /dashboard/channels/{channel_id}/members", a.instrument("dashboard_list_channel_members", a.requireOrgUser(a.handleDashboardListChannelMembers)))

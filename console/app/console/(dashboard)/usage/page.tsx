@@ -4,16 +4,14 @@ import { motion } from "framer-motion";
 import { BarChart3, ExternalLink, MessageCircle, Users as UsersIcon } from "lucide-react";
 import { ApiError } from "@/lib/api";
 import { useUsageQuery } from "@/lib/queries";
-import { ConsoleShell, useSession } from "@/components/shell";
+import { useSession } from "@/components/shell";
 import { AnimatedNumber, ErrorBanner, Panel, Skeleton } from "@/components/ui";
 
 const GRAFANA_URL = process.env.NEXT_PUBLIC_GRAFANA_URL ?? "http://localhost:3003/d/chat-platform-overview";
 
 export default function UsagePage() {
   return (
-    <ConsoleShell>
       <UsageView />
-    </ConsoleShell>
   );
 }
 

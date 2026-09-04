@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Check, Loader2 } from "lucide-react";
 import { me, ApiError } from "@/lib/api";
-import { ConsoleShell, useSession } from "@/components/shell";
+import { useSession } from "@/components/shell";
 import { Button, Panel } from "@/components/ui";
 
 const POLL_INTERVAL_MS = 1500;
@@ -19,9 +19,7 @@ const MAX_POLLS = 20; // ~30s — the subscription.active webhook is usually nea
 // doesn't within a reasonable window.
 export default function BillingReturnPage() {
   return (
-    <ConsoleShell>
       <BillingReturnView />
-    </ConsoleShell>
   );
 }
 

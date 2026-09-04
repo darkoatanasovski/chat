@@ -12,6 +12,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -102,6 +103,73 @@ func (a *App) handleDashboardCreateEndUser(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusCreated, toDashboardEndUserResponse(u))
+}
+
+// ---- playground tokens ----
+
+// playgroundTokenTTL is deliberately shorter than handleCreateUser's
+// tokenTTL (24h): a token minted from the dashboard exists so an operator
+// can act as one of their app's end-users in the console's Playground for
+// a session, not so it can be embedded in a real client. The Playground
+// re-mints transparently when one expires.
+const playgroundTokenTTL = time.Hour
+
+type dashboardEndUserTokenResponse struct {
+	UserID    string `json:"user_id"`
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+// handleDashboardMintEndUserToken backs
+// POST /dashboard/apps/{app_id}/users/{user_id}/token — mints a client
+// bearer token for an EXISTING end-user of one of the caller's org's apps,
+// identical in shape and scope to what POST /users hands a business's own
+// backend (same signer, same claims), just issued from the dashboard. This
+// is what lets the console's Playground drive the end-user API (send
+// messages, react, vote, ...) as a chosen end-user without the browser ever
+// touching an app secret. A user_id that exists but belongs to a different
+// app is reported as 404, not 403, so an org can't probe whether a user id
+// exists in an app it doesn't own.
+func (a *App) handleDashboardMintEndUserToken(w http.ResponseWriter, r *http.Request) {
+	orgIdentity, _ := orgIdentityFromContext(r.Context())
+	app, ok := a.requireOwnedApp(w, r, orgIdentity.OrgID)
+	if !ok {
+		return
+	}
+
+	userID, err := uuid.Parse(r.PathValue("user_id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+
+	u, err := a.usersSvc.Get(r.Context(), userID)
+	if err != nil {
+		if errors.Is(err, users.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "end-user not found")
+			return
+		}
+		a.log.Error("load end user for token", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load end-user")
+		return
+	}
+	if u.AppID != app.AppID {
+		writeError(w, http.StatusNotFound, "end-user not found")
+		return
+	}
+
+	token, err := a.signer.IssueUserToken(u.UserID.String(), u.HomeRegion, u.AppID, playgroundTokenTTL)
+	if err != nil {
+		a.log.Error("issue playground token", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to issue token")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, dashboardEndUserTokenResponse{
+		UserID:    u.UserID.String(),
+		Token:     token,
+		ExpiresAt: time.Now().Add(playgroundTokenTTL).UTC().Format(rfc3339Milli),
+	})
 }
 
 // ---- channels ----

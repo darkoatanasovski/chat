@@ -1,14 +1,19 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import Link from "next/link";
 import { motion } from "framer-motion";
 import { Boxes, Check, Copy, KeyRound, Plus } from "lucide-react";
 import { ApiError } from "@/lib/api";
 import { useAppsMessagesDailyQuery, useAppsQuery, useCreateAppMutation } from "@/lib/queries";
 import type { CreatedApp } from "@/lib/types";
-import { ConsoleShell, useSession } from "@/components/shell";
+import { useSession } from "@/components/shell";
 import { useToast } from "@/components/toast";
 import { Button, ErrorBanner, Input, Label, Modal, Panel, Skeleton, Sparkline } from "@/components/ui";
+
+// A Next <Link> with framer-motion so the app cards keep their fade-in
+// entry animation while navigating client-side (no full page reload).
+const MotionLink = motion.create(Link);
 
 // Matches the backend's dashboardDailyWindowDays (cmd/api/handlers_dashboard.go)
 // — the fallback shape for an app the /messages/daily response hasn't
@@ -19,9 +24,7 @@ const ZERO_DAILY = Array<number>(DAILY_WINDOW).fill(0);
 
 export default function AppsPage() {
   return (
-    <ConsoleShell>
       <AppsView />
-    </ConsoleShell>
   );
 }
 
@@ -84,7 +87,7 @@ function AppsView() {
             const stats = messagesByApp?.get(app.app_id);
             const daily = stats?.daily ?? ZERO_DAILY;
             return (
-              <motion.a
+              <MotionLink
                 key={app.app_id}
                 href={`/console/apps/${app.app_id}`}
                 initial={{ opacity: 0, y: 10 }}
@@ -114,7 +117,7 @@ function AppsView() {
                 <div className="mt-3">
                   <Sparkline values={daily} />
                 </div>
-              </motion.a>
+              </MotionLink>
             );
           })}
         </div>
