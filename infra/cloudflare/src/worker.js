@@ -28,6 +28,13 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
+    // CORS preflight must be answered at the edge BEFORE any auth/routing:
+    // preflight carries no credentials, so it can't be resolved to a cell,
+    // and the browser needs the CORS headers to allow the real request.
+    if (request.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: corsHeaders(request) });
+    }
+
     if (url.pathname === "/healthz") {
       return new Response("ok", { status: 200 });
     }
@@ -251,9 +258,25 @@ function proxy(request, url, origin) {
   return fetch(new Request(target.toString(), request));
 }
 
-function jsonError(status, message) {
-  return new Response(JSON.stringify({ error: message }), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
+// corsHeaders reflects the request Origin (works with or without credentials)
+// and the requested headers, so both preflight and Worker-origin error
+// responses are readable by the browser. Proxied responses keep the origin's
+// own CORS headers.
+function corsHeaders(request) {
+  return {
+    "access-control-allow-origin": request.headers.get("Origin") || "*",
+    "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    "access-control-allow-headers":
+      request.headers.get("Access-Control-Request-Headers") || "Content-Type,Authorization,X-Requested-With",
+    "access-control-allow-credentials": "true",
+    "access-control-max-age": "86400",
+    vary: "Origin",
+  };
+}
+
+function jsonError(status, message, request) {
+  const headers = { "content-type": "application/json" };
+  if (request) Object.assign(headers, corsHeaders(request));
+  else headers["access-control-allow-origin"] = "*";
+  return new Response(JSON.stringify({ error: message }), { status, headers });
 }
