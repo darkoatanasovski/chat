@@ -136,17 +136,13 @@ CELL_ENV = {
 
 
 def apps():
+    # NOTE: no `router` service here. In a Cloudflare-fronted deployment the
+    # Cloudflare Worker (infra/cloudflare) IS the edge router — apikey -> region
+    # -> proxy to that region's api origin. The Go cmd/router is only for local
+    # dev (docker-compose) or a non-Cloudflare edge. So Railway runs just the
+    # origins: control + api + ws + worker.
     print("apps (from GitHub repo):")
     src = {"repo": REPO}
-    router = ensure_service("router", src)
-    set_vars(router, {
-        "CONFIG_DSN": dsn("config-postgres"), "VALKEY_ADDR": f"{internal('us-east-1-a-valkey')}:6379",
-        "AUTH_SECRET": AUTH_SECRET, "TOPOLOGY_CONFIG": "/etc/chat/topology.yaml",
-        "CONTROL_URL": f"http://{internal('control')}:8080",
-        "ROUTER_ADDR": ":8080", "METRICS_ADDR": ":9100", **DOCKERFILE,
-    })
-    set_start_command(router, "router")
-
     control = ensure_service("control", src)
     set_vars(control, {**CELL_ENV, "SHARD_US_EAST_1_A_DSN": dsn("us-east-1-a-postgres")})
     set_start_command(control, "control")

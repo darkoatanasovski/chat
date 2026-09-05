@@ -13,17 +13,24 @@ anymore.
 
 ## Topology (one region, one cell — the cheap starting point)
 
-| Railway service | Start command | Notes |
-|---|---|---|
-| `router` | `router` | Public. The global endpoint (`api.chat.io`). Set `CONTROL_URL` to the control service. |
-| `control` | `control` | Global org/dashboard/billing plane. Reads config DB + every cell DB. |
-| `config-postgres` | — | Railway Postgres plugin. The global config DB. |
-| `cell-a-postgres` | — | Railway Postgres plugin. This cell's own DB. |
-| `cell-a-kafka` | — | `apache/kafka:3.8.0` image. This cell's own broker. |
-| `cell-a-valkey` | — | Railway Redis plugin / `valkey/valkey:7.2-alpine`. This cell's cache. |
-| `cell-a-api` | `api` | REST for the cell (run 2+ for availability). |
-| `cell-a-ws` | `ws` | WebSocket edge for the cell (run 2+). |
-| `cell-a-worker` | `worker` | Outbox publisher + retention/reminders (run 2+). |
+> **Edge routing is Cloudflare, not a Railway service.** In production the
+> Cloudflare Worker (`infra/cloudflare`) is the edge router: it reads the
+> apikey, looks up the region, and proxies to that region's `api` origin (and
+> control-plane paths to `control`). So Railway runs only the **origins** — no
+> `router` service. Give `api` and `control` **public** Railway domains and
+> point the Worker's `REGIONS` / `CONTROL_ORIGIN` at them. The Go `cmd/router`
+> is for local dev (docker-compose) or a non-Cloudflare edge only.
+
+| Railway service | Start command | Public domain | Notes |
+|---|---|---|---|
+| `control` | `control` | yes (→ Worker `CONTROL_ORIGIN`) | Global org/dashboard/billing plane. Reads config DB + every cell DB. |
+| `config-postgres` | — | — | Railway Postgres plugin. The global config DB. |
+| `cell-a-postgres` | — | — | Railway Postgres plugin. This cell's own DB. |
+| `cell-a-kafka` | — | — | `apache/kafka:3.8.0` image. This cell's own broker. |
+| `cell-a-valkey` | — | — | Railway Redis plugin / `valkey/valkey:7.2-alpine`. This cell's cache. |
+| `cell-a-api` | `api` | yes (→ Worker `REGIONS[us-east-1]`) | REST for the cell (run 2+ for availability). |
+| `cell-a-ws` | `ws` | yes (WebSocket, via the Worker) | WebSocket edge for the cell (run 2+). |
+| `cell-a-worker` | `worker` | — | Outbox publisher + retention/reminders (run 2+). |
 
 Adding a second cell = a second Postgres/Kafka/Valkey trio plus its own
 `api`/`ws`/`worker` services, and a new entry in `infra/topology.yaml`. The
