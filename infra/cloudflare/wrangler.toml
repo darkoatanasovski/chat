@@ -29,6 +29,9 @@ crons = ["*/5 * * * *"]
 # proxies data-plane requests to the origin of the app's placement region.
 # Pointed at the Railway deployment (the us-east-1 cell's api).
 REGIONS = '{"us-east-1":"https://api-production-15fc.up.railway.app"}'
+# region -> that region's ws (WebSocket edge) origin. WS upgrades (/connect)
+# proxy here instead of the api origin.
+WS_REGIONS = '{"us-east-1":"https://ws-production-f5ba.up.railway.app"}'
 # The global control-plane service (chat control) — org/dashboard/billing.
 CONTROL_ORIGIN = "https://control-production-08ab.up.railway.app"
 # Public base URL for R2 attachments (the bucket's custom domain). Uploads

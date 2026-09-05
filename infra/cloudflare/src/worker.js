@@ -79,14 +79,16 @@ export default {
       return jsonError(401, "unknown or unplaced api_key");
     }
 
-    const regions = parseRegions(env);
-    const origin = regions[placement.region];
+    // WebSocket upgrades go to the region's ws origin; everything else to its
+    // api origin.
+    const isWs = (request.headers.get("Upgrade") || "").toLowerCase() === "websocket";
+    const origin = (isWs ? parseJSON(env.WS_REGIONS) : parseRegions(env))[placement.region];
     if (!origin) {
-      return jsonError(502, `no origin configured for region ${placement.region}`);
+      return jsonError(502, `no ${isWs ? "ws " : ""}origin configured for region ${placement.region}`, request);
     }
 
     const resp = await proxy(request, url, origin);
-    recordAnalytics(env, { plane: "data", region: placement.region, shard: placement.shard || "-", status: resp.status });
+    recordAnalytics(env, { plane: isWs ? "ws" : "data", region: placement.region, shard: placement.shard || "-", status: resp.status });
     return resp;
   },
 
@@ -166,9 +168,12 @@ async function resolvePlacementKey(request, url, env) {
   const q = url.searchParams.get("api_key");
   if (q) return "apikey:" + q;
 
+  // WebSocket connects can't set headers, so the user token is a query param
+  // (?token=) — matches the ws /connect handler.
+  const qt = url.searchParams.get("token");
   const auth = request.headers.get("Authorization") || "";
-  if (!auth.startsWith("Bearer ")) return null;
-  const token = auth.slice("Bearer ".length);
+  const token = qt || (auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "");
+  if (!token) return null;
 
   const claims = await readClaims(token, env);
   if (!claims) return null;
@@ -240,12 +245,16 @@ async function readThroughPlacement(kvKey, env) {
   }
 }
 
-function parseRegions(env) {
+function parseJSON(s) {
   try {
-    return JSON.parse(env.REGIONS || "{}");
+    return JSON.parse(s || "{}");
   } catch {
     return {};
   }
+}
+
+function parseRegions(env) {
+  return parseJSON(env.REGIONS);
 }
 
 // proxy forwards the request to `origin` keeping the path, query, method,
