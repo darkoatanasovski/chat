@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
-import { Boxes, Check, FlaskConical, Globe2, Languages, MessagesSquare, Pin, Radio, ShieldOff, SlidersHorizontal, Users, Vote } from "lucide-react";
-import { HeroIllustration } from "@/components/landing/hero-illustration";
+import { Boxes, Check, FlaskConical, Globe2, Languages, MessagesSquare, Pin, Radio, ShieldCheck, ShieldOff, SlidersHorizontal, Users, Vote } from "lucide-react";
+import { ChatMockup } from "@/components/landing/chat-mockup";
 import { PLANS } from "@/lib/plans";
 
 const TITLE = "Real-time chat infrastructure, built to go global";
@@ -41,7 +41,7 @@ const JSON_LD = {
 const FEATURES = [
   { icon: Globe2, title: "Global by default", desc: "Every app spans EU, US, and Asia from the first message. Delivery routes through the region closest to the sender — no region picker, no per-region deploys." },
   { icon: Radio, title: "Real-time everything", desc: "A WebSocket gateway with typing indicators, online presence, read receipts, message reminders, and connect/disconnect events out of the box." },
-  { icon: MessagesSquare, title: "Rich messaging", desc: "Threads and replies, quotes, edits, file attachments, location sharing, and automatic link previews — the whole surface of a modern chat." },
+  { icon: MessagesSquare, title: "Rich messaging", desc: "Threads and replies, quotes, edits, location sharing, and automatic link previews — with attachment fields on every message, ready to point at your own file storage." },
   { icon: Vote, title: "Reactions & polls", desc: "Eight built-in reactions and single- or multi-select polls you can attach to any message, with live tallies pushed to every member." },
   { icon: Pin, title: "Pins & bookmarks", desc: "Channel-shared pins everyone sees, plus private bookmark folders each user keeps to themselves." },
   { icon: Languages, title: "Search & translation", desc: "Full-text search across a channel's messages and on-demand translation into any language, cached per message so repeat reads are free." },
@@ -96,8 +96,10 @@ export default function LandingPage() {
               </a>
             </div>
           </div>
-          <HeroIllustration />
+          <ChatMockup />
         </section>
+
+        <TrustBar />
 
         <DottedDivider />
 
@@ -260,6 +262,33 @@ function LandingFooter() {
         <span className="text-xs text-text-faint">© {new Date().getFullYear()} Chat Platform</span>
       </div>
     </footer>
+  );
+}
+
+// A credibility strip under the hero — the compliance posture a B2B infra
+// buyer scans for. Framed as the standards the platform is built around;
+// swap "Built for" / labels for certified marks once audits complete.
+function TrustBar() {
+  const marks = ["SOC 2", "GDPR", "HIPAA", "ISO 27001"] as const;
+  return (
+    <section className="mx-auto max-w-6xl px-6 pb-8">
+      <div className="flex flex-col items-center gap-4">
+        <span className="inline-flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-text-faint">
+          <ShieldCheck className="h-3.5 w-3.5 text-accent" />
+          Built for compliance from day one
+        </span>
+        <div className="flex flex-wrap items-center justify-center gap-2.5">
+          {marks.map((m) => (
+            <span
+              key={m}
+              className="rounded-full border border-border-soft bg-surface px-4 py-1.5 text-[13px] font-medium text-text-muted"
+            >
+              {m}
+            </span>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 
