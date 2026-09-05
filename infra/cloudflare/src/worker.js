@@ -49,14 +49,14 @@ export default {
       return resp;
     }
 
-    const apiKey = await resolveApiKey(request, url, env);
-    if (!apiKey) {
+    const kvKey = await resolvePlacementKey(request, url, env);
+    if (!kvKey) {
       return jsonError(401, "could not resolve app for request; provide a valid api_key or bearer token");
     }
 
     let placement;
     try {
-      placement = await env.PLACEMENT.get(`apikey:${apiKey}`, { type: "json" });
+      placement = await env.PLACEMENT.get(kvKey, { type: "json" });
     } catch (e) {
       return jsonError(502, "placement lookup failed");
     }
@@ -117,12 +117,12 @@ async function handleUpload(request, env) {
     return jsonError(404, "attachments (R2) not configured");
   }
   const url = new URL(request.url);
-  const apiKey = await resolveApiKey(request, url, env);
-  if (!apiKey) {
+  const pk = await resolvePlacementKey(request, url, env);
+  if (!pk) {
     return jsonError(401, "upload requires a valid api_key or bearer token");
   }
   const ext = extensionFor(request.headers.get("content-type"));
-  const key = `${apiKey.replace(/[^A-Za-z0-9_-]/g, "_")}/${crypto.randomUUID()}${ext}`;
+  const key = `${pk.replace(/[^A-Za-z0-9_-]/g, "_")}/${crypto.randomUUID()}${ext}`;
   try {
     await env.ATTACHMENTS.put(key, request.body, {
       httpMetadata: { contentType: request.headers.get("content-type") || "application/octet-stream" },
@@ -143,13 +143,13 @@ function isControlPath(path) {
   return CONTROL_PREFIXES.some((p) => path === p || path.startsWith(p + "/"));
 }
 
-// resolveApiKey mirrors the Go router: ?api_key= wins (browser WebSockets
-// can't set headers), else a bearer token's api_key (app token) or app_id
-// (user token) claim. app_id is returned as the KV key `appid:<n>` — the sync
-// writes both apikey:* and appid:* entries.
-async function resolveApiKey(request, url, env) {
+// resolvePlacementKey returns the KV key to look the placement up under, or
+// null. ?api_key= and an app token's api_key claim resolve to `apikey:<key>`;
+// a user token's app_id claim resolves to `appid:<id>`. sync-kv.sh writes both
+// kinds of entries, so the returned key matches an entry directly.
+async function resolvePlacementKey(request, url, env) {
   const q = url.searchParams.get("api_key");
-  if (q) return q;
+  if (q) return "apikey:" + q;
 
   const auth = request.headers.get("Authorization") || "";
   if (!auth.startsWith("Bearer ")) return null;
@@ -157,8 +157,8 @@ async function resolveApiKey(request, url, env) {
 
   const claims = await readClaims(token, env);
   if (!claims) return null;
-  if (claims.api_key) return claims.api_key;
-  if (claims.app_id) return `appid:${claims.app_id}`; // resolved by an appid:* KV entry
+  if (claims.api_key) return "apikey:" + claims.api_key;
+  if (claims.app_id) return "appid:" + claims.app_id;
   return null;
 }
 

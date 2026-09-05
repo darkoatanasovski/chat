@@ -19,7 +19,11 @@ ENVID = os.environ.get("ENVID", "19d0e0e0-4758-4f48-a92d-bef279f9d898")
 REPO = os.environ.get("REPO", "darkoatanasovski/chat")
 API = "https://backboard.railway.com/graphql/v2"
 
-PG = {"POSTGRES_USER": "chat", "POSTGRES_PASSWORD": "chat", "POSTGRES_DB": "chat"}
+# PGDATA points at a SUBDIR of the mounted volume: Railway volumes mount at
+# /var/lib/postgresql/data with a lost+found, which makes the postgres image's
+# initdb refuse to start ("directory exists but is not empty"). A subdir is clean.
+PG = {"POSTGRES_USER": "chat", "POSTGRES_PASSWORD": "chat", "POSTGRES_DB": "chat",
+      "PGDATA": "/var/lib/postgresql/data/pgdata"}
 AUTH_SECRET = os.environ.get("AUTH_SECRET", "dev-local-only-secret-change-me")
 APP_SECRET_ENCRYPTION_KEY = os.environ.get("APP_SECRET_ENCRYPTION_KEY", "")
 

@@ -10,3 +10,8 @@ deploy/docker/chat
 
 # wrangler local state
 infra/cloudflare/.wrangler/
+
+# root build artifacts / nested repos
+/loadtest
+/crossgw-check
+/sdk/

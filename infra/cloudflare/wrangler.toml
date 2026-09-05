@@ -31,9 +31,10 @@ crons = ["*/5 * * * *"]
 [vars]
 # region id -> that region's origin (the per-region api hostname). The Worker
 # proxies data-plane requests to the origin of the app's placement region.
-REGIONS = '{"us-east-1":"https://us-east-1.api.chat.io","eu-west-1":"https://eu-west-1.api.chat.io"}'
+# Pointed at the Railway deployment (the us-east-1 cell's api).
+REGIONS = '{"us-east-1":"https://api-production-15fc.up.railway.app"}'
 # The global control-plane service (chat control) — org/dashboard/billing.
-CONTROL_ORIGIN = "https://control.chat.io"
+CONTROL_ORIGIN = "https://control-production-08ab.up.railway.app"
 # Public base URL for R2 attachments (the bucket's custom domain). Uploads
 # return "<base>/<key>"; reads are served directly by R2, off the data path.
 ATTACHMENTS_BASE_URL = "https://cdn.chat.io"
