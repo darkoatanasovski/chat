@@ -12,15 +12,11 @@ compatibility_date = "2024-09-01"
 binding = "PLACEMENT"
 id = "a090b7e6d5274539a41b2d01174640a1"
 
-# Edge request metrics, out of the box: the Worker writes one datapoint per
-# request (region, shard, status). Query it from Grafana via the Analytics
-# Engine SQL API. DISABLED until Analytics Engine is enabled for the account
-# (Cloudflare dashboard → Workers → Analytics Engine); the Worker's
-# recordAnalytics() is a no-op without this binding, so deploy works either
-# way. Re-enable after turning it on:
-# [[analytics_engine_datasets]]
-# binding = "EDGE_ANALYTICS"
-# dataset = "chat_edge_requests"
+# Edge request metrics: the Worker writes one datapoint per request (plane,
+# region, shard, status). Query via the Analytics Engine SQL API.
+[[analytics_engine_datasets]]
+binding = "EDGE_ANALYTICS"
+dataset = "chat_edge_requests"
 
 # Cron Triggers: refresh the placement KV from PLACEMENT_SYNC_URL on a
 # schedule (the Worker's scheduled() handler), so KV self-heals even if an
