@@ -60,6 +60,14 @@ export default {
     } catch (e) {
       return jsonError(502, "placement lookup failed");
     }
+    // Read-through: on a KV miss ask the control plane and cache the result,
+    // so a freshly-created app routes immediately without a manual/cron sync.
+    if (!placement || !placement.region) {
+      placement = await readThroughPlacement(kvKey, env);
+      if (placement && placement.region) {
+        ctx.waitUntil(env.PLACEMENT.put(kvKey, JSON.stringify(placement)));
+      }
+    }
     if (!placement || !placement.region) {
       return jsonError(401, "unknown or unplaced api_key");
     }
@@ -203,6 +211,26 @@ function b64urlToBytes(s) {
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return bytes;
+}
+
+// readThroughPlacement resolves a placement from the control plane on a KV
+// miss (GET CONTROL_ORIGIN/internal/placement?api_key=|app_id=). kvKey is
+// "apikey:<key>" or "appid:<id>". Returns {region,shard} or null.
+async function readThroughPlacement(kvKey, env) {
+  if (!env.CONTROL_ORIGIN) return null;
+  let query;
+  if (kvKey.startsWith("apikey:")) query = "api_key=" + encodeURIComponent(kvKey.slice(7));
+  else if (kvKey.startsWith("appid:")) query = "app_id=" + encodeURIComponent(kvKey.slice(6));
+  else return null;
+  try {
+    const headers = env.INTERNAL_KEY ? { "X-Internal-Key": env.INTERNAL_KEY } : {};
+    const resp = await fetch(`${env.CONTROL_ORIGIN}/internal/placement?${query}`, { headers });
+    if (!resp.ok) return null;
+    const p = await resp.json();
+    return p && p.region ? p : null;
+  } catch {
+    return null;
+  }
 }
 
 function parseRegions(env) {

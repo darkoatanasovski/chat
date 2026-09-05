@@ -57,6 +57,10 @@ type Config struct {
 	// signup (control plane). Empty = disabled (dev/tests/unprotected).
 	TurnstileSecret string
 
+	// InternalAuthKey gates the control plane's /internal/* endpoints (the
+	// edge router's read-through placement lookup). Empty = open (dev).
+	InternalAuthKey string
+
 	// AppSecretEncryptionKey decrypts/encrypts app_credentials.secret_encrypted
 	// (internal/platform/secretbox) so a dashboard user can reveal a
 	// credential's secret again after the one-time creation response is
@@ -152,6 +156,7 @@ func Load() (Config, error) {
 		ValkeyMasterName:   getenvDefault("VALKEY_MASTER_NAME", "mymaster"),
 		AuthSecret:         os.Getenv("AUTH_SECRET"),
 		TurnstileSecret:    os.Getenv("TURNSTILE_SECRET"),
+		InternalAuthKey:    os.Getenv("INTERNAL_AUTH_KEY"),
 		ShardsConfigPath:   os.Getenv("SHARDS_CONFIG"),
 		TiersConfigPath:    getenvDefault("TIERS_CONFIG", "/etc/chat/tiers.yaml"),
 		KafkaConsumerGroup: os.Getenv("KAFKA_CONSUMER_GROUP"),

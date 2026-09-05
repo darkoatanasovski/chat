@@ -101,6 +101,9 @@ func (a *App) registerDataRoutes(mux *http.ServeMux) {
 }
 
 func (a *App) registerControlRoutes(mux *http.ServeMux) {
+	// Read-through placement lookup for the edge router (KV-miss fallback).
+	mux.HandleFunc("GET /internal/placement", a.instrument("placement_lookup", a.handlePlacementLookup))
+
 	mux.HandleFunc("POST /organizations", a.instrument("create_org", a.handleCreateOrg))
 	mux.HandleFunc("POST /organizations/{org_id}/apps", a.instrument("create_app", a.requireOrgAuth(a.handleCreateApp)))
 	mux.HandleFunc("GET /organizations/{org_id}/apps", a.instrument("list_apps", a.requireOrgAuth(a.handleListApps)))
