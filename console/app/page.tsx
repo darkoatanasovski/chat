@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Boxes, Check, FlaskConical, Globe2, Languages, MessagesSquare, Pin, Radio, ShieldCheck, ShieldOff, SlidersHorizontal, Users, Vote } from "lucide-react";
 import { ChatMockup } from "@/components/landing/chat-mockup";
+import DemoChat from "@/components/demo-chat";
 import { PLANS } from "@/lib/plans";
 
 const TITLE = "Real-time chat infrastructure, built to go global";
@@ -97,6 +98,17 @@ export default function LandingPage() {
             </div>
           </div>
           <ChatMockup />
+        </section>
+
+        <section id="try" className="mx-auto max-w-6xl px-6 py-20">
+          <h2 className="text-center text-2xl font-semibold text-text">Try it live</h2>
+          <p className="mx-auto mt-3 max-w-xl text-center text-sm text-text-muted">
+            Pick a name, join the shared Lobby, and test the real thing — messages, reactions,
+            edits, and typing indicators, delivered over the live platform.
+          </p>
+          <div className="mt-10">
+            <DemoChat />
+          </div>
         </section>
 
         <TrustBar />
