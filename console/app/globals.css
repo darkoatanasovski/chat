@@ -184,6 +184,29 @@ select {
   animation: chat-typing-dot 1s ease-in-out infinite;
 }
 
+/* Animated hero mockup (components/landing/chat-mockup.tsx): unlike the
+   SVG illustration above, this is a JS-driven timeline, so each of these
+   plays once per element as React mounts it — a bubble/typing row sliding
+   in (chat-msg-in) and a reaction pill popping on (chat-pop). */
+@keyframes chat-msg-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.chat-item { animation: chat-msg-in 0.32s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+@keyframes chat-pop {
+  0%   { opacity: 0; transform: scale(0.6); }
+  60%  { opacity: 1; transform: scale(1.08); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.chat-pop { animation: chat-pop 0.3s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-item,
+  .chat-pop,
+  .chat-typing-dot { animation: none; }
+}
+
 @keyframes chat-ping-ring {
   0% { opacity: 0; transform: scale(0.6); }
   6% { opacity: 0.6; transform: scale(0.9); }
