@@ -66,6 +66,10 @@ func (a *App) handleDashboardListEndUsers(w http.ResponseWriter, r *http.Request
 
 type dashboardCreateEndUserRequest struct {
 	DisplayName string `json:"display_name"`
+	// Region is accepted but ignored — an end-user's region is its app's
+	// placement (config DB), not caller-chosen. Kept so existing console
+	// clients that still send it don't hit strict-JSON "unknown field".
+	Region string `json:"region,omitempty"`
 }
 
 // handleDashboardCreateEndUser backs POST /dashboard/apps/{app_id}/users —
