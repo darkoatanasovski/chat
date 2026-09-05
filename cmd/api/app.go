@@ -1,13 +1,13 @@
 // cmd/api is the stateless HTTP service implementing the REST surface in
 // INSTRUCTIONS.md §36. It owns no long-lived per-client state (any instance
-// can serve any request) and forwards channel writes to the channel's home
-// region when it isn't the instance currently handling the request
-// (INSTRUCTIONS.md §5/§27).
-package main
+// can serve any request). It serves exactly the apps pinned to its own cell:
+// the edge router (cmd/router) resolves apikey -> cell and sends each request
+// to the right one, so this service never forwards cross-region or reaches
+// another cell's data (docs/adr/0006-cell-based-tenant-routing.md).
+package api
 
 import (
-	"net/http"
-	"time"
+	"fmt"
 
 	"github.com/dodopayments/dodopayments-go"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,7 +31,7 @@ import (
 	"github.com/darkoatanasovski/chat/internal/realtime"
 	"github.com/darkoatanasovski/chat/internal/reminders"
 	"github.com/darkoatanasovski/chat/internal/routing"
-	pgstorage "github.com/darkoatanasovski/chat/internal/storage/postgres"
+	"github.com/darkoatanasovski/chat/internal/topology"
 	"github.com/darkoatanasovski/chat/internal/translations"
 	"github.com/darkoatanasovski/chat/internal/users"
 
@@ -46,12 +46,29 @@ type App struct {
 	metrics *metrics.Metrics
 
 	signer *auth.Signer
-	router *routing.Router
+	// region resolves channel_id -> app_id for tenant-isolation checks.
+	// Home-region write-forwarding is gone: the edge router already sent
+	// this request to the one cell that owns the app (ADR 0006), so any
+	// channel this instance sees is local and authoritative.
 	region *routing.RegionResolver
 	quota  *quota.Quota
 
-	controlPool *pgxpool.Pool
-	shardPools  pgstorage.ShardPools
+	// configPool is the global config DB (orgs, apps, credentials, org
+	// users/invites, translation usage). cellPool is THIS cell's own
+	// database, holding every tenant-scoped table for the apps pinned here
+	// (users, channels, membership, messages, …). There is no cross-cell
+	// access and no virtual-shard indirection — a cell has one database.
+	//
+	// In the DATA-plane api (RunAPI) cellPool is the one cell this instance
+	// serves. In the CONTROL-plane service (RunControl) cellPool is nil and
+	// cellPools + topo are populated instead: the control plane is global and
+	// reaches every cell's DB for admin/dashboard operations (cellPoolForApp
+	// resolves an app's placement to its cell). topo is also used to place a
+	// new app into a cell at creation.
+	configPool *pgxpool.Pool
+	cellPool   *pgxpool.Pool
+	cellPools  map[string]*pgxpool.Pool // "region/shard" -> cell DB (control plane only)
+	topo       *topology.Index
 
 	orgsSvc  *organizations.Service
 	orgsRepo *organizations.Repo
@@ -78,8 +95,6 @@ type App struct {
 	membershipCache *realtime.MembershipCache
 	blocksCache     *realtime.BlocksCache
 
-	peerClient *http.Client
-
 	// dodo is always non-nil, even when billing is unconfigured (empty
 	// cfg.DodoAPIKey) — handlers_billing.go checks cfg.DodoAPIKey before
 	// using it, so an unconfigured client is simply never called.
@@ -94,15 +109,27 @@ type App struct {
 	translationUsageRepo *translations.UsageRepo
 }
 
-func (a *App) shardPoolFor(channelID string) (pool *pgxpool.Pool, physicalShardID string, virtualShard int, err error) {
-	physicalShardID, virtualShard, err = a.router.Resolve(channelID)
-	if err != nil {
-		return nil, "", 0, err
-	}
-	pool, err = a.shardPools.Get(physicalShardID)
-	return pool, physicalShardID, virtualShard, err
+// shardPoolFor returns the database holding a channel's messages. In the cell
+// model that is always this instance's own cell database — the app (and thus
+// all its channels) is pinned to this cell, so there is no per-channel shard
+// selection. The extra return values are retained for call-site compatibility
+// (shardID names this cell; the virtual shard is gone, always 0).
+func (a *App) shardPoolFor(string) (pool *pgxpool.Pool, physicalShardID string, virtualShard int, err error) {
+	return a.cellPool, a.cfg.ShardID, 0, nil
 }
 
-func newPeerClient() *http.Client {
-	return &http.Client{Timeout: 5 * time.Second}
+// cellPoolForApp resolves an app's placement (region, shard) to that cell's
+// database pool. Used only by the control plane (RunControl), whose dashboard
+// and admin handlers read/write tenant data across the cells an org's apps
+// live in. Returns an error if the app is unplaced or its cell isn't in this
+// service's configured topology.
+func (a *App) cellPoolForApp(app apps.App) (*pgxpool.Pool, error) {
+	if app.Region == "" || app.Shard == "" {
+		return nil, fmt.Errorf("app %d has no cell placement", app.AppID)
+	}
+	pool, ok := a.cellPools[app.Region+"/"+app.Shard]
+	if !ok {
+		return nil, fmt.Errorf("no cell pool for placement %s/%s (app %d)", app.Region, app.Shard, app.AppID)
+	}
+	return pool, nil
 }

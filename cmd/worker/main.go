@@ -1,9 +1,10 @@
-// cmd/worker runs the transactional outbox publisher for exactly one
-// physical shard (INSTRUCTIONS.md §16). One instance per shard — see
-// deploy/docker-compose.yml's worker-outbox-a / worker-outbox-b — polls that
-// shard's outbox_events table and publishes to Kafka, deleting each row only
-// after a successful publish.
-package main
+// cmd/worker runs the transactional outbox publisher for one cell
+// (INSTRUCTIONS.md §16; docs/adr/0006-cell-based-tenant-routing.md). It polls
+// this cell's outbox_events table and publishes to this cell's Kafka,
+// deleting each row only after a successful publish. It also runs the cell's
+// background maintenance jobs (retention, reminders). Two+ worker replicas
+// run per cell for availability.
+package worker
 
 import (
 	"context"
@@ -28,7 +29,7 @@ const (
 	batchSize    = 100
 )
 
-func main() {
+func Run() {
 	cfg, err := config.Load()
 	if err != nil {
 		panic(err)
@@ -39,9 +40,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := pgstorage.Connect(ctx, cfg.ShardDSN)
+	// This cell's own database (outbox + all tenant data). The retention and
+	// reminder sweepers additionally open the global config DB for tier
+	// resolution — see startRetentionSweeper.
+	pool, err := pgstorage.Connect(ctx, cfg.CellDSN)
 	if err != nil {
-		log.Error("connect shard db", "shard", cfg.ShardID, "error", err)
+		log.Error("connect cell db", "shard", cfg.ShardID, "error", err)
 		os.Exit(1)
 	}
 
@@ -70,7 +74,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", metrics.Handler())
 	mux.Handle("/healthz", health.Handler(map[string]health.Checker{
-		"shard": pool.Ping,
+		"cell": pool.Ping,
 	}))
 	debug.Mount(mux)
 	go func() {

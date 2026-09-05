@@ -2,10 +2,9 @@
 // live (quota.TierLimits.RetentionDays, configured in deploy/tiers.yaml —
 // e.g. FREE keeps a week, ENTERPRISE keeps forever). Enforcing that is a
 // background job, not something the send/read path ever checks, so it runs
-// here in cmd/worker alongside the outbox publisher: one Sweeper instance
-// per physical shard, touching only the messages that already live on its
-// own shard pool.
-package main
+// here in cmd/worker alongside the outbox publisher: one Sweeper per cell,
+// walking every channel in the cell (docs/adr/0006-cell-based-tenant-routing.md).
+package worker
 
 import (
 	"context"
@@ -22,7 +21,6 @@ import (
 	"github.com/darkoatanasovski/chat/internal/platform/config"
 	"github.com/darkoatanasovski/chat/internal/platform/metrics"
 	"github.com/darkoatanasovski/chat/internal/quota"
-	"github.com/darkoatanasovski/chat/internal/routing"
 	pgstorage "github.com/darkoatanasovski/chat/internal/storage/postgres"
 )
 
@@ -32,9 +30,9 @@ const (
 	retentionDeleteBatch   = 1000
 )
 
-// Sweeper walks every channel whose virtual_shard falls in [vsMin, vsMax]
-// (the range this physical shard owns per shards.yaml) and deletes any of
-// its messages older than its owning organization's plan allows.
+// Sweeper walks every channel in this cell and deletes any of its messages
+// older than its owning organization's plan allows. There is no virtual-shard
+// range: a cell holds exactly the channels of the apps pinned to it.
 type Sweeper struct {
 	log *slog.Logger
 	m   *metrics.Metrics
@@ -42,18 +40,16 @@ type Sweeper struct {
 	channelsRepo *channels.Repo
 	appTiers     *apps.TierResolver
 	messagesRepo *messages.Repo
-	shardPool    *pgxpool.Pool
+	cellPool     *pgxpool.Pool
 
 	tiers map[string]quota.TierLimits
-	vsMin int
-	vsMax int
 }
 
-func NewSweeper(log *slog.Logger, m *metrics.Metrics, channelsRepo *channels.Repo, appTiers *apps.TierResolver, messagesRepo *messages.Repo, shardPool *pgxpool.Pool, tiers map[string]quota.TierLimits, vsMin, vsMax int) *Sweeper {
+func NewSweeper(log *slog.Logger, m *metrics.Metrics, channelsRepo *channels.Repo, appTiers *apps.TierResolver, messagesRepo *messages.Repo, cellPool *pgxpool.Pool, tiers map[string]quota.TierLimits) *Sweeper {
 	return &Sweeper{
 		log: log, m: m,
-		channelsRepo: channelsRepo, appTiers: appTiers, messagesRepo: messagesRepo, shardPool: shardPool,
-		tiers: tiers, vsMin: vsMin, vsMax: vsMax,
+		channelsRepo: channelsRepo, appTiers: appTiers, messagesRepo: messagesRepo, cellPool: cellPool,
+		tiers: tiers,
 	}
 }
 
@@ -78,7 +74,7 @@ func (s *Sweeper) Run(ctx context.Context, interval time.Duration) {
 func (s *Sweeper) sweepOnce(ctx context.Context) {
 	after := uuid.Nil
 	for {
-		page, err := s.channelsRepo.ListByVirtualShardRange(ctx, s.vsMin, s.vsMax, after, retentionPageSize)
+		page, err := s.channelsRepo.ListForRetention(ctx, after, retentionPageSize)
 		if err != nil {
 			s.log.Error("retention: list channels", "error", err)
 			return
@@ -98,7 +94,7 @@ func (s *Sweeper) sweepOnce(ctx context.Context) {
 				continue
 			}
 			cutoff := time.Now().UTC().AddDate(0, 0, -limits.RetentionDays)
-			deleted, err := s.messagesRepo.DeleteExpiredBefore(ctx, s.shardPool, ch.ChannelID, cutoff, retentionDeleteBatch)
+			deleted, err := s.messagesRepo.DeleteExpiredBefore(ctx, s.cellPool, ch.ChannelID, cutoff, retentionDeleteBatch)
 			if err != nil {
 				s.log.Error("retention: delete expired", "channel_id", ch.ChannelID, "error", err)
 				continue
@@ -116,50 +112,32 @@ func (s *Sweeper) sweepOnce(ctx context.Context) {
 	}
 }
 
-// startRetentionSweeper wires up and launches the Sweeper for this
-// instance's own shard, running until ctx is cancelled. It opens its own
-// connection to the control-plane DB (organizations/apps/channels — none
-// of which live on the shard cmd/worker otherwise only ever talks to) and
-// resolves tier via apps.TierResolver with no Redis client (nil is
+// startRetentionSweeper wires up and launches the Sweeper for this cell,
+// running until ctx is cancelled. Channels and messages both live in the
+// cell DB (cellPool); tier is resolved from the global config DB
+// (organizations/apps) via apps.TierResolver with no Redis client (nil is
 // explicitly supported — see its doc comment): a once-an-hour background
 // sweep has no need for that cache's speed, only Postgres as the source of
 // truth.
-func startRetentionSweeper(ctx context.Context, cfg config.Config, log *slog.Logger, m *metrics.Metrics, shardPool *pgxpool.Pool) error {
-	shardsCfg, err := routing.LoadShardsConfig(cfg.ShardsConfigPath)
-	if err != nil {
-		return fmt.Errorf("load shards config: %w", err)
-	}
-	var vsMin, vsMax int
-	found := false
-	for _, ps := range shardsCfg.PhysicalShards {
-		if ps.ID == cfg.ShardID {
-			vsMin, vsMax = ps.VirtualShardRange[0], ps.VirtualShardRange[1]
-			found = true
-			break
-		}
-	}
-	if !found {
-		return fmt.Errorf("shard id %q has no virtual_shard_range in shards config", cfg.ShardID)
-	}
-
+func startRetentionSweeper(ctx context.Context, cfg config.Config, log *slog.Logger, m *metrics.Metrics, cellPool *pgxpool.Pool) error {
 	tiers, err := quota.LoadTiers(cfg.TiersConfigPath)
 	if err != nil {
 		return fmt.Errorf("load tiers config: %w", err)
 	}
 
-	controlPool, err := pgstorage.Connect(ctx, cfg.ControlDSN)
+	configPool, err := pgstorage.Connect(ctx, cfg.ConfigDSN)
 	if err != nil {
-		return fmt.Errorf("connect control db: %w", err)
+		return fmt.Errorf("connect config db: %w", err)
 	}
 
-	appsRepo := apps.NewRepo(controlPool)
+	appsRepo := apps.NewRepo(configPool)
 	appTiers := apps.NewTierResolver(nil, appsRepo.TierSource)
-	channelsRepo := channels.NewRepo(controlPool)
+	channelsRepo := channels.NewRepo(cellPool)
 	messagesRepo := messages.NewRepo()
 
-	sweeper := NewSweeper(log, m, channelsRepo, appTiers, messagesRepo, shardPool, tiers, vsMin, vsMax)
+	sweeper := NewSweeper(log, m, channelsRepo, appTiers, messagesRepo, cellPool, tiers)
 	go sweeper.Run(ctx, retentionSweepInterval)
 
-	log.Info("retention sweeper started", "shard", cfg.ShardID, "virtual_shard_range", [2]int{vsMin, vsMax}, "interval", retentionSweepInterval)
+	log.Info("retention sweeper started", "shard", cfg.ShardID, "interval", retentionSweepInterval)
 	return nil
 }

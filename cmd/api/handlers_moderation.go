@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"net/http"
@@ -92,7 +92,7 @@ func (a *App) handleApproveMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
+	_, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
 	if !ok {
 		return
 	}
@@ -105,11 +105,6 @@ func (a *App) handleApproveMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if !app.ChannelCapabilities.PendingMessages {
 		writeError(w, http.StatusForbidden, "pending messages are not enabled for this app")
-		return
-	}
-
-	if route.HomeRegion != a.cfg.Region {
-		a.forwardToHomeRegion(w, r, route.HomeRegion, nil)
 		return
 	}
 
@@ -152,7 +147,7 @@ func (a *App) handleRejectMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
+	_, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
 	if !ok {
 		return
 	}
@@ -165,11 +160,6 @@ func (a *App) handleRejectMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if !app.ChannelCapabilities.PendingMessages {
 		writeError(w, http.StatusForbidden, "pending messages are not enabled for this app")
-		return
-	}
-
-	if route.HomeRegion != a.cfg.Region {
-		a.forwardToHomeRegion(w, r, route.HomeRegion, nil)
 		return
 	}
 

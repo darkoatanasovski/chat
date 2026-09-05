@@ -4,3 +4,9 @@
 node_modules/
 .next/
 demo/.env.local
+
+# host-built binary for Dockerfile.prebuilt (make up-prebuilt)
+deploy/docker/chat
+
+# wrangler local state
+infra/cloudflare/.wrangler/

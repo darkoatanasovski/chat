@@ -1,5 +1,8 @@
 // Package users owns account identity: creation and lookup against the
-// control-plane database. It does not know about tokens (internal/platform/auth)
+// cell database (each user belongs to one app, pinned to one cell — see
+// docs/adr/0006-cell-based-tenant-routing.md). A user's region is its app's
+// placement, not a per-user fact, so it is not stored here. It does not know
+// about tokens (internal/platform/auth)
 // or quotas (internal/quota) — cmd/api wires those together. It does not
 // know about tier either: tier lives on the Organization that owns the
 // App a user belongs to, resolved live (internal/apps.TierResolver), never
@@ -19,7 +22,6 @@ import (
 type User struct {
 	UserID      uuid.UUID
 	DisplayName string
-	HomeRegion  string
 	AppID       int64 // tenant-isolation boundary — see internal/apps
 	CreatedAt   time.Time
 	// LastActiveAt is nil until this user's first tracked activity — see
@@ -53,9 +55,9 @@ func NewRepo(pool *pgxpool.Pool) *Repo {
 
 func (r *Repo) Create(ctx context.Context, u User) error {
 	_, err := r.pool.Exec(ctx, `
-		INSERT INTO users (user_id, display_name, home_region, app_id, created_at)
-		VALUES ($1, $2, $3, $4, $5)
-	`, u.UserID, u.DisplayName, u.HomeRegion, u.AppID, u.CreatedAt)
+		INSERT INTO users (user_id, display_name, app_id, created_at)
+		VALUES ($1, $2, $3, $4)
+	`, u.UserID, u.DisplayName, u.AppID, u.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("users: create: %w", err)
 	}
@@ -83,9 +85,9 @@ func (r *Repo) TouchActivity(ctx context.Context, userID uuid.UUID, at time.Time
 func (r *Repo) Get(ctx context.Context, userID uuid.UUID) (User, error) {
 	var u User
 	err := r.pool.QueryRow(ctx, `
-		SELECT user_id, display_name, home_region, app_id, created_at, last_active_at
+		SELECT user_id, display_name, app_id, created_at, last_active_at
 		FROM users WHERE user_id = $1
-	`, userID).Scan(&u.UserID, &u.DisplayName, &u.HomeRegion, &u.AppID, &u.CreatedAt, &u.LastActiveAt)
+	`, userID).Scan(&u.UserID, &u.DisplayName, &u.AppID, &u.CreatedAt, &u.LastActiveAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return User{}, fmt.Errorf("users: %w", ErrNotFound)
@@ -113,7 +115,7 @@ func (r *Repo) CountByApp(ctx context.Context, appID int64) (int, error) {
 // is an operator view over one app's users, not an end-user-facing feed.
 func (r *Repo) ListByApp(ctx context.Context, appID int64) ([]User, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT user_id, display_name, home_region, app_id, created_at, last_active_at
+		SELECT user_id, display_name, app_id, created_at, last_active_at
 		FROM users WHERE app_id = $1 ORDER BY created_at DESC
 	`, appID)
 	if err != nil {
@@ -124,7 +126,7 @@ func (r *Repo) ListByApp(ctx context.Context, appID int64) ([]User, error) {
 	var out []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.UserID, &u.DisplayName, &u.HomeRegion, &u.AppID, &u.CreatedAt, &u.LastActiveAt); err != nil {
+		if err := rows.Scan(&u.UserID, &u.DisplayName, &u.AppID, &u.CreatedAt, &u.LastActiveAt); err != nil {
 			return nil, fmt.Errorf("users: list by app: %w", err)
 		}
 		out = append(out, u)
@@ -132,35 +134,11 @@ func (r *Repo) ListByApp(ctx context.Context, appID int64) ([]User, error) {
 	return out, rows.Err()
 }
 
-// CountByRegion backs the dashboard's world-map view — total end-users per
-// home region across a set of an org's apps, grouped in one query rather
-// than one round trip per app. Regions with zero users are simply absent
-// from the returned map; the caller fills in any region it wants shown at 0.
-func (r *Repo) CountByRegion(ctx context.Context, appIDs []int64) (map[string]int, error) {
-	counts := map[string]int{}
-	if len(appIDs) == 0 {
-		return counts, nil
-	}
-	rows, err := r.pool.Query(ctx, `
-		SELECT home_region, count(*) FROM users WHERE app_id = ANY($1) GROUP BY home_region
-	`, appIDs)
-	if err != nil {
-		return nil, fmt.Errorf("users: count by region: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var region string
-		var count int
-		if err := rows.Scan(&region, &count); err != nil {
-			return nil, fmt.Errorf("users: count by region: %w", err)
-		}
-		counts[region] = count
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("users: count by region: %w", err)
-	}
-	return counts, nil
-}
+// Region is no longer a per-user fact — every user in a cell belongs to one
+// app, and that app's region is its placement in the config DB. The
+// dashboard's world-map therefore groups an org's apps by their placement
+// region and sums each app's CountByApp, rather than grouping users by a
+// stored per-user region (see cmd/api/handlers_dashboard.go).
 
 // Service is the application-level entry point used by cmd/api. It assigns
 // a UUIDv7 identity; the caller (cmd/api) is responsible for issuing an
@@ -175,8 +153,9 @@ func NewService(repo *Repo) *Service {
 
 // CreateUser mints a new identity within appID — the caller (cmd/api)
 // resolves appID from the authenticated App credential (requireAppCredentials),
-// never from anything client-asserted, same as it already trusts region.
-func (s *Service) CreateUser(ctx context.Context, displayName, region string, appID int64) (User, error) {
+// never from anything client-asserted. The user's region is its app's
+// placement (config DB), not a per-user value, so it isn't passed here.
+func (s *Service) CreateUser(ctx context.Context, displayName string, appID int64) (User, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return User{}, fmt.Errorf("users: generate id: %w", err)
@@ -184,7 +163,6 @@ func (s *Service) CreateUser(ctx context.Context, displayName, region string, ap
 	u := User{
 		UserID:      id,
 		DisplayName: displayName,
-		HomeRegion:  region,
 		AppID:       appID,
 		CreatedAt:   time.Now().UTC(),
 	}
@@ -197,11 +175,6 @@ func (s *Service) CreateUser(ctx context.Context, displayName, region string, ap
 // CountByApp backs the dashboard's usage view — see Repo.CountByApp.
 func (s *Service) CountByApp(ctx context.Context, appID int64) (int, error) {
 	return s.repo.CountByApp(ctx, appID)
-}
-
-// CountByRegion backs the dashboard's world-map view — see Repo.CountByRegion.
-func (s *Service) CountByRegion(ctx context.Context, appIDs []int64) (map[string]int, error) {
-	return s.repo.CountByRegion(ctx, appIDs)
 }
 
 // ListByApp backs the dashboard's end-users view — see Repo.ListByApp.

@@ -1,10 +1,12 @@
-package main
+package api
 
 import (
 	"context"
 	"io"
 	"log/slog"
 	"sync"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/darkoatanasovski/chat/internal/apps"
 	"github.com/darkoatanasovski/chat/internal/blocks"
@@ -25,6 +27,7 @@ import (
 	"github.com/darkoatanasovski/chat/internal/realtime"
 	"github.com/darkoatanasovski/chat/internal/routing"
 	pgstorage "github.com/darkoatanasovski/chat/internal/storage/postgres"
+	"github.com/darkoatanasovski/chat/internal/topology"
 	redisstorage "github.com/darkoatanasovski/chat/internal/storage/redis"
 	"github.com/darkoatanasovski/chat/internal/users"
 )
@@ -39,39 +42,41 @@ func buildTestApp() (*App, error) {
 	ctx := context.Background()
 	cfg := config.Config{
 		Region:     "eu",
+		ShardID:    "eu-a",
 		AuthSecret: "test-secret-do-not-use-in-prod",
 		// 32 bytes exactly (secretbox.KeySize) — any fixed test value
 		// works, same spirit as AuthSecret above.
 		AppSecretEncryptionKey: []byte("test-app-secret-encryption-key!!"),
-		ShardsConfigPath:       "../../deploy/shards.yaml",
 		TiersConfigPath:        "../../deploy/tiers.yaml",
 		CORSAllowedOrigins:     []string{"http://localhost:3000"},
 	}
 
-	controlPool, err := pgstorage.Connect(ctx, "postgres://chat:chat@localhost:5433/chat?sslmode=disable")
+	// Cell model: one global config DB + this cell's own DB (ADR 0006). The
+	// dev stack exposes the config DB on 5433 and the cell DB on 5434.
+	configPool, err := pgstorage.Connect(ctx, "postgres://chat:chat@localhost:5433/chat?sslmode=disable")
 	if err != nil {
 		return nil, err
 	}
-	shardA, err := pgstorage.Connect(ctx, "postgres://chat:chat@localhost:5434/chat?sslmode=disable")
+	cellPool, err := pgstorage.Connect(ctx, "postgres://chat:chat@localhost:5434/chat?sslmode=disable")
 	if err != nil {
 		return nil, err
 	}
-	shardB, err := pgstorage.Connect(ctx, "postgres://chat:chat@localhost:5435/chat?sslmode=disable")
-	if err != nil {
-		return nil, err
-	}
-	shardPools := pgstorage.ShardPools{"shard-a": shardA, "shard-b": shardB}
 
 	redisClient, err := redisstorage.Connect(ctx, "localhost:6379")
 	if err != nil {
 		return nil, err
 	}
 
-	shardsCfg, err := routing.LoadShardsConfig(cfg.ShardsConfigPath)
-	if err != nil {
-		return nil, err
-	}
-	router := routing.NewRouter(shardsCfg)
+	// A one-region, one-cell topology matching cfg.Region/ShardID so
+	// create-app placement resolves to this cell. cellPools lets the
+	// control-plane routes (mounted alongside data routes by testRoutes)
+	// resolve app→cell.
+	var topoCell topology.Cell
+	topoCell.ID = cfg.ShardID
+	topo := topology.NewIndex(topology.Topology{
+		Regions: []topology.Region{{ID: cfg.Region, Cells: []topology.Cell{topoCell}}},
+	})
+	cellPools := map[string]*pgxpool.Pool{cfg.Region + "/" + cfg.ShardID: cellPool}
 
 	tiers, err := quota.LoadTiers(cfg.TiersConfigPath)
 	if err != nil {
@@ -80,18 +85,18 @@ func buildTestApp() (*App, error) {
 	rateLimiter := quota.NewRateLimiter(redisClient)
 	q := quota.New(tiers, rateLimiter)
 
-	channelsRepo := channels.NewRepo(controlPool)
+	channelsRepo := channels.NewRepo(cellPool)
 	region := routing.NewRegionResolver(redisClient, channelsRepo.RouteSource)
 
-	orgsRepo := organizations.NewRepo(controlPool)
-	orgUsersRepo := orgusers.NewRepo(controlPool)
-	orgInvitesRepo := orgusers.NewInviteRepo(controlPool)
-	appsRepo := apps.NewRepo(controlPool)
+	orgsRepo := organizations.NewRepo(configPool)
+	orgUsersRepo := orgusers.NewRepo(configPool)
+	orgInvitesRepo := orgusers.NewInviteRepo(configPool)
+	appsRepo := apps.NewRepo(configPool)
 	secretBox, err := secretbox.New(cfg.AppSecretEncryptionKey)
 	if err != nil {
 		return nil, err
 	}
-	appCredentials := apps.NewCredentialRepo(controlPool, secretBox)
+	appCredentials := apps.NewCredentialRepo(configPool, secretBox)
 	appTiers := apps.NewTierResolver(redisClient, appsRepo.TierSource)
 
 	m := metrics.New("chat_api_test")
@@ -100,11 +105,12 @@ func buildTestApp() (*App, error) {
 		log:             slog.New(slog.NewTextHandler(io.Discard, nil)),
 		metrics:         m,
 		signer:          auth.NewSigner(cfg.AuthSecret),
-		router:          router,
 		region:          region,
 		quota:           q,
-		controlPool:     controlPool,
-		shardPools:      shardPools,
+		configPool:      configPool,
+		cellPool:        cellPool,
+		cellPools:       cellPools,
+		topo:            topo,
 		orgsSvc:         organizations.NewService(orgsRepo),
 		orgsRepo:        orgsRepo,
 		orgUsersRepo:    orgUsersRepo,
@@ -112,19 +118,18 @@ func buildTestApp() (*App, error) {
 		appsRepo:        appsRepo,
 		appCredentials:  appCredentials,
 		appTiers:        appTiers,
-		usersSvc:        users.NewService(users.NewRepo(controlPool)),
-		channelsSvc:     channels.NewService(channelsRepo, router),
+		usersSvc:        users.NewService(users.NewRepo(cellPool)),
+		channelsSvc:     channels.NewService(channelsRepo),
 		channelsRepo:    channelsRepo,
-		membershipRepo:  membership.NewRepo(controlPool),
+		membershipRepo:  membership.NewRepo(cellPool),
 		messagesRepo:    messages.NewRepo(),
 		reactionsRepo:   reactions.NewRepo(),
 		pollsRepo:       polls.NewRepo(),
 		readStateRepo:   readstate.NewRepo(),
-		blocksRepo:      blocks.NewRepo(controlPool),
-		bookmarksRepo:   bookmarks.NewRepo(controlPool),
+		blocksRepo:      blocks.NewRepo(cellPool),
+		bookmarksRepo:   bookmarks.NewRepo(cellPool),
 		membershipCache: realtime.NewMembershipCache(redisClient, m),
 		blocksCache:     realtime.NewBlocksCache(redisClient, m),
-		peerClient:      newPeerClient(),
 	}, nil
 }
 

@@ -1,8 +1,9 @@
-// Package channels owns channel identity and the one piece of authoritative
-// routing metadata that isn't purely computed: home_region
-// (INSTRUCTIONS.md §5). virtual_shard IS purely computed (internal/routing)
-// but is stored alongside home_region at creation time so reads never need
-// to recompute it either.
+// Package channels owns channel identity, stored in the cell database. A
+// channel carries no routing metadata of its own: its region and shard are
+// its app's placement (config DB, see docs/adr/0006-cell-based-tenant-routing.md),
+// and all of its data lives in the one cell its app is pinned to. The only
+// authoritative fact kept here beyond identity is app_id — the
+// tenant-isolation boundary.
 package channels
 
 import (
@@ -21,13 +22,11 @@ import (
 var ErrNotFound = errors.New("channel not found")
 
 type Channel struct {
-	ChannelID    uuid.UUID
-	Name         string
-	HomeRegion   string
-	VirtualShard int
-	AppID        int64 // tenant-isolation boundary — see routing.ChannelRoute
-	CreatedBy    uuid.UUID
-	CreatedAt    time.Time
+	ChannelID uuid.UUID
+	Name      string
+	AppID     int64 // tenant-isolation boundary — see routing.ChannelRoute
+	CreatedBy uuid.UUID
+	CreatedAt time.Time
 }
 
 type Repo struct {
@@ -51,9 +50,9 @@ func (r *Repo) CreateWithCreatorMembership(ctx context.Context, c Channel) error
 	defer tx.Rollback(ctx)
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO channels (channel_id, name, home_region, virtual_shard, app_id, created_by, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, c.ChannelID, c.Name, c.HomeRegion, c.VirtualShard, c.AppID, c.CreatedBy, c.CreatedAt); err != nil {
+		INSERT INTO channels (channel_id, name, app_id, created_by, created_at)
+		VALUES ($1, $2, $3, $4, $5)
+	`, c.ChannelID, c.Name, c.AppID, c.CreatedBy, c.CreatedAt); err != nil {
 		return fmt.Errorf("channels: create: %w", err)
 	}
 
@@ -78,9 +77,9 @@ func (r *Repo) CreateWithCreatorMembership(ctx context.Context, c Channel) error
 func (r *Repo) Get(ctx context.Context, channelID uuid.UUID) (Channel, error) {
 	var c Channel
 	err := r.pool.QueryRow(ctx, `
-		SELECT channel_id, name, home_region, virtual_shard, app_id, created_by, created_at
+		SELECT channel_id, name, app_id, created_by, created_at
 		FROM channels WHERE channel_id = $1
-	`, channelID).Scan(&c.ChannelID, &c.Name, &c.HomeRegion, &c.VirtualShard, &c.AppID, &c.CreatedBy, &c.CreatedAt)
+	`, channelID).Scan(&c.ChannelID, &c.Name, &c.AppID, &c.CreatedBy, &c.CreatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return Channel{}, ErrNotFound
@@ -116,7 +115,7 @@ type ChannelWithStats struct {
 // why: an operator view, not an end-user-facing feed).
 func (r *Repo) ListByApp(ctx context.Context, appID int64) ([]ChannelWithStats, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT c.channel_id, c.name, c.home_region, c.virtual_shard, c.app_id, c.created_by, c.created_at,
+		SELECT c.channel_id, c.name, c.app_id, c.created_by, c.created_at,
 		       u.display_name,
 		       (SELECT count(*) FROM channel_members cm WHERE cm.channel_id = c.channel_id)
 		FROM channels c
@@ -132,7 +131,7 @@ func (r *Repo) ListByApp(ctx context.Context, appID int64) ([]ChannelWithStats, 
 	var out []ChannelWithStats
 	for rows.Next() {
 		var c ChannelWithStats
-		if err := rows.Scan(&c.ChannelID, &c.Name, &c.HomeRegion, &c.VirtualShard, &c.AppID, &c.CreatedBy, &c.CreatedAt, &c.CreatorName, &c.MemberCount); err != nil {
+		if err := rows.Scan(&c.ChannelID, &c.Name, &c.AppID, &c.CreatedBy, &c.CreatedAt, &c.CreatorName, &c.MemberCount); err != nil {
 			return nil, fmt.Errorf("channels: list by app: %w", err)
 		}
 		out = append(out, c)
@@ -151,32 +150,27 @@ func (r *Repo) CountByApp(ctx context.Context, appID int64) (int, error) {
 	return count, nil
 }
 
-// ChannelRouteInfo is the lean per-channel routing data the dashboard's
-// message-count view needs: which app it belongs to, which region it's
-// homed in, and which virtual shard to look it up on — all already stored
-// at creation time (see the package doc comment), so this never joins
-// beyond the channels table itself.
+// ChannelRouteInfo is the lean per-channel data the dashboard's message-count
+// and polls views need: which app a channel belongs to and its name. Region
+// is no longer per-channel (it's the app's placement), and there is no
+// virtual shard — every channel in a cell lives on that cell's one database —
+// so neither is carried here anymore.
 type ChannelRouteInfo struct {
-	ChannelID    uuid.UUID
-	AppID        int64
-	Name         string
-	HomeRegion   string
-	VirtualShard int
+	ChannelID uuid.UUID
+	AppID     int64
+	Name      string
 }
 
 // ListRouteInfoByApps backs the dashboard's messages-sent view and the
-// dashboard's polls view — every channel across a set of an org's apps,
-// grouped in one query rather than one round trip per app (same convention
-// as users.Repo.CountByRegion). Name is included (unlike the original
-// messages-sent view, which never needed to display which channel a count
-// belonged to) so the polls view can show "which channel" without a
-// separate per-poll lookup.
+// dashboard's polls view — every channel across a set of an org's apps in one
+// query. (When those apps span multiple cells, the dashboard queries each
+// cell and merges; within a cell this is a single scan.)
 func (r *Repo) ListRouteInfoByApps(ctx context.Context, appIDs []int64) ([]ChannelRouteInfo, error) {
 	if len(appIDs) == 0 {
 		return nil, nil
 	}
 	rows, err := r.pool.Query(ctx, `
-		SELECT channel_id, app_id, name, home_region, virtual_shard FROM channels WHERE app_id = ANY($1)
+		SELECT channel_id, app_id, name FROM channels WHERE app_id = ANY($1)
 	`, appIDs)
 	if err != nil {
 		return nil, fmt.Errorf("channels: list route info by apps: %w", err)
@@ -186,7 +180,7 @@ func (r *Repo) ListRouteInfoByApps(ctx context.Context, appIDs []int64) ([]Chann
 	var out []ChannelRouteInfo
 	for rows.Next() {
 		var c ChannelRouteInfo
-		if err := rows.Scan(&c.ChannelID, &c.AppID, &c.Name, &c.HomeRegion, &c.VirtualShard); err != nil {
+		if err := rows.Scan(&c.ChannelID, &c.AppID, &c.Name); err != nil {
 			return nil, fmt.Errorf("channels: list route info by apps: %w", err)
 		}
 		out = append(out, c)
@@ -194,42 +188,38 @@ func (r *Repo) ListRouteInfoByApps(ctx context.Context, appIDs []int64) ([]Chann
 	return out, rows.Err()
 }
 
-// ListByVirtualShardRange backs the per-shard message-retention sweep
-// (cmd/worker): every channel whose virtual_shard falls in [minVS, maxVS] —
-// the range cmd/worker's own physical shard owns per shards.yaml — so the
-// sweep only ever touches channels whose messages actually live on its own
-// shard pool, with no per-channel hashing needed (virtual_shard is already
-// stored at creation time, see the package doc above).
-//
-// Keyset-paginated on channel_id (INSTRUCTIONS.md §11: never OFFSET) since a
-// large deployment's channels table won't fit one query's result set;
-// afterChannelID is the last channel_id from the previous page (uuid.Nil
-// for the first page).
-func (r *Repo) ListByVirtualShardRange(ctx context.Context, minVS, maxVS int, afterChannelID uuid.UUID, limit int) ([]Channel, error) {
+// ListForRetention backs the message-retention sweep (chat worker). A cell's
+// worker sweeps every channel in its own cell — there is no virtual-shard
+// range to restrict to, because a cell holds exactly the channels of the apps
+// pinned to it. Keyset-paginated on channel_id (INSTRUCTIONS.md §11: never
+// OFFSET); afterChannelID is the last channel_id from the previous page
+// (uuid.Nil for the first page).
+func (r *Repo) ListForRetention(ctx context.Context, afterChannelID uuid.UUID, limit int) ([]Channel, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT channel_id, name, home_region, virtual_shard, app_id, created_by, created_at
+		SELECT channel_id, name, app_id, created_by, created_at
 		FROM channels
-		WHERE virtual_shard BETWEEN $1 AND $2 AND channel_id > $3
+		WHERE channel_id > $1
 		ORDER BY channel_id
-		LIMIT $4
-	`, minVS, maxVS, afterChannelID, limit)
+		LIMIT $2
+	`, afterChannelID, limit)
 	if err != nil {
-		return nil, fmt.Errorf("channels: list by virtual shard range: %w", err)
+		return nil, fmt.Errorf("channels: list for retention: %w", err)
 	}
 	defer rows.Close()
 
 	var out []Channel
 	for rows.Next() {
 		var c Channel
-		if err := rows.Scan(&c.ChannelID, &c.Name, &c.HomeRegion, &c.VirtualShard, &c.AppID, &c.CreatedBy, &c.CreatedAt); err != nil {
-			return nil, fmt.Errorf("channels: list by virtual shard range: %w", err)
+		if err := rows.Scan(&c.ChannelID, &c.Name, &c.AppID, &c.CreatedBy, &c.CreatedAt); err != nil {
+			return nil, fmt.Errorf("channels: list for retention: %w", err)
 		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
 }
 
-// RouteSource adapts Repo.Get for routing.RegionResolver's fallback.
+// RouteSource adapts Repo.Get for routing.RegionResolver's channel->app_id
+// lookup (the tenant-isolation check; home-region forwarding is gone).
 func (r *Repo) RouteSource(ctx context.Context, channelID string) (routing.ChannelRoute, error) {
 	id, err := uuid.Parse(channelID)
 	if err != nil {
@@ -239,7 +229,7 @@ func (r *Repo) RouteSource(ctx context.Context, channelID string) (routing.Chann
 	if err != nil {
 		return routing.ChannelRoute{}, err
 	}
-	return routing.ChannelRoute{HomeRegion: c.HomeRegion, AppID: c.AppID}, nil
+	return routing.ChannelRoute{AppID: c.AppID}, nil
 }
 
 // UpdateLastMessage denormalizes the latest-message pointer into

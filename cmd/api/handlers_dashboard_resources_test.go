@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"fmt"
@@ -15,12 +15,14 @@ func TestDashboardEndUsers_CreateAndList(t *testing.T) {
 
 	var created dashboardEndUserResponse
 	rec := do(t, app, authed(jsonRequest("POST", fmt.Sprintf("/dashboard/apps/%d/users", appID), dashboardCreateEndUserRequest{
-		DisplayName: "Ada Lovelace", Region: "eu",
+		DisplayName: "Ada Lovelace",
 	}), ownerToken), &created)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create end user: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if created.DisplayName != "Ada Lovelace" || created.Region != "eu" || created.UserID == "" {
+	// Region is now the app's placement (config DB), not a per-request field —
+	// it reflects wherever createTestApp placed the app.
+	if created.DisplayName != "Ada Lovelace" || created.UserID == "" {
 		t.Fatalf("unexpected create response: %+v", created)
 	}
 
@@ -28,14 +30,6 @@ func TestDashboardEndUsers_CreateAndList(t *testing.T) {
 	rec = do(t, app, authed(jsonRequest("GET", fmt.Sprintf("/dashboard/apps/%d/users", appID), nil), ownerToken), &list)
 	if rec.Code != http.StatusOK || len(list) != 1 || list[0].UserID != created.UserID {
 		t.Fatalf("list end users: status = %d, list = %+v", rec.Code, list)
-	}
-
-	// Invalid region rejected.
-	rec = do(t, app, authed(jsonRequest("POST", fmt.Sprintf("/dashboard/apps/%d/users", appID), dashboardCreateEndUserRequest{
-		DisplayName: "Bad Region", Region: "mars",
-	}), ownerToken), nil)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("invalid region: status = %d, want 400", rec.Code)
 	}
 }
 
@@ -50,7 +44,7 @@ func TestDashboardEndUsers_CrossOrgIsolation(t *testing.T) {
 		t.Fatalf("cross-org list end users: status = %d, want 403", rec.Code)
 	}
 	rec = do(t, app, authed(jsonRequest("POST", fmt.Sprintf("/dashboard/apps/%d/users", appID), dashboardCreateEndUserRequest{
-		DisplayName: "Intruder", Region: "eu",
+		DisplayName: "Intruder",
 	}), otherToken), nil)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-org create end user: status = %d, want 403", rec.Code)
@@ -117,7 +111,7 @@ func createDashboardEndUser(t *testing.T, app *App, ownerToken string, appID int
 	t.Helper()
 	var u dashboardEndUserResponse
 	rec := do(t, app, authed(jsonRequest("POST", fmt.Sprintf("/dashboard/apps/%d/users", appID), dashboardCreateEndUserRequest{
-		DisplayName: name, Region: "eu",
+		DisplayName: name,
 	}), ownerToken), &u)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create dashboard end user %q: status = %d, body = %s", name, rec.Code, rec.Body.String())

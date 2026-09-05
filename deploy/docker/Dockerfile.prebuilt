@@ -1,0 +1,14 @@
+# Runtime-only image: expects the `chat` binary to be prebuilt on the HOST
+# (deploy/docker/build-binary.sh) so Docker never compiles Go — avoids the
+# in-container `go build` OOM'ing a memory-constrained Docker Desktop VM.
+# Use via: make up-prebuilt  (which builds the binary, then points compose here
+# with CHAT_DOCKERFILE=deploy/docker/Dockerfile.prebuilt).
+#
+# Build context is the repo root (see docker-compose.yml x-app-build.context).
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+COPY deploy/docker/chat /usr/local/bin/chat
+COPY deploy/tiers.yaml /etc/chat/tiers.yaml
+COPY infra/topology.yaml /etc/chat/topology.yaml
+ENTRYPOINT ["chat"]
+CMD ["api"]

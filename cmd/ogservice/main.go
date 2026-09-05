@@ -14,7 +14,7 @@
 // internal/platform/config.Load (which requires AUTH_SECRET and other
 // fields this service has no use for); its own tiny env-driven config is
 // defined below.
-package main
+package ogservice
 
 import (
 	"context"
@@ -81,7 +81,7 @@ func getenvInt64(key string, def int64) int64 {
 	return def
 }
 
-func main() {
+func Run() {
 	cfg := loadConfig()
 	log := logging.New("og-service", os.Getenv("REGION"))
 	m := metrics.New("chat_og_service")

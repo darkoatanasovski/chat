@@ -5,7 +5,7 @@
 // established for a different concern. They're kept in one file because
 // both are genuinely small compared to retention's per-shard channel walk,
 // not because they share any state.
-package main
+package worker
 
 import (
 	"context"
@@ -25,7 +25,6 @@ import (
 	"github.com/darkoatanasovski/chat/internal/platform/metrics"
 	"github.com/darkoatanasovski/chat/internal/readstate"
 	"github.com/darkoatanasovski/chat/internal/reminders"
-	"github.com/darkoatanasovski/chat/internal/routing"
 	pgstorage "github.com/darkoatanasovski/chat/internal/storage/postgres"
 )
 
@@ -34,12 +33,10 @@ const (
 	messageReminderBatchSize    = 100
 )
 
-// startMessageReminderPoller polls this instance's own shard pool directly
-// — message_reminders is a shard table with no control-plane dependency,
-// unlike the unread sweep below, so there's no per-shard-range channel walk
-// needed here: internal/reminders.Repo.ListDue already scopes itself to
-// whatever shard the given pool is.
-func startMessageReminderPoller(ctx context.Context, log *slog.Logger, shardPool *pgxpool.Pool) {
+// startMessageReminderPoller polls this cell's own database directly —
+// message_reminders is a cell table, so internal/reminders.Repo.ListDue
+// already scopes itself to the given pool (this cell).
+func startMessageReminderPoller(ctx context.Context, log *slog.Logger, cellPool *pgxpool.Pool) {
 	repo := reminders.NewRepo()
 	go func() {
 		ticker := time.NewTicker(messageReminderPollInterval)
@@ -49,7 +46,7 @@ func startMessageReminderPoller(ctx context.Context, log *slog.Logger, shardPool
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				delivered, err := repo.DeliverDue(ctx, shardPool, messageReminderBatchSize)
+				delivered, err := repo.DeliverDue(ctx, cellPool, messageReminderBatchSize)
 				if err != nil {
 					log.Error("message reminder poll", "error", err)
 					continue
@@ -68,9 +65,8 @@ const (
 	unreadPageSize       = 500
 )
 
-// UnreadSweeper walks every channel this physical shard owns (same
-// [vsMin, vsMax] scoping as Sweeper) looking for members who are both
-// behind (their read watermark trails the channel's latest message) and
+// UnreadSweeper walks every channel in this cell looking for members who are
+// both behind (their read watermark trails the channel's latest message) and
 // due for another nudge (never reminded, or last reminded more than
 // unreadReminderMinGap ago) in an app that has unread_reminders on.
 type UnreadSweeper struct {
@@ -82,9 +78,7 @@ type UnreadSweeper struct {
 	appsRepo       *apps.Repo
 	messagesRepo   *messages.Repo
 	readStateRepo  *readstate.Repo
-	shardPool      *pgxpool.Pool
-
-	vsMin, vsMax int
+	cellPool       *pgxpool.Pool
 }
 
 func (s *UnreadSweeper) Run(ctx context.Context, interval time.Duration) {
@@ -105,7 +99,7 @@ func (s *UnreadSweeper) Run(ctx context.Context, interval time.Duration) {
 func (s *UnreadSweeper) sweepOnce(ctx context.Context) {
 	after := uuid.Nil
 	for {
-		page, err := s.channelsRepo.ListByVirtualShardRange(ctx, s.vsMin, s.vsMax, after, unreadPageSize)
+		page, err := s.channelsRepo.ListForRetention(ctx, after, unreadPageSize)
 		if err != nil {
 			s.log.Error("unread reminders: list channels", "error", err)
 			return
@@ -135,7 +129,7 @@ func (s *UnreadSweeper) sweepChannel(ctx context.Context, channelID uuid.UUID, a
 		return
 	}
 
-	latest, err := s.messagesRepo.SumSequencesByChannels(ctx, s.shardPool, []uuid.UUID{channelID})
+	latest, err := s.messagesRepo.SumSequencesByChannels(ctx, s.cellPool, []uuid.UUID{channelID})
 	if err != nil {
 		s.log.Warn("unread reminders: resolve latest sequence", "channel_id", channelID, "error", err)
 		return
@@ -156,7 +150,7 @@ func (s *UnreadSweeper) sweepChannel(ctx context.Context, channelID uuid.UUID, a
 		return
 	}
 
-	states, err := s.readStateRepo.ListState(ctx, s.shardPool, channelID)
+	states, err := s.readStateRepo.ListState(ctx, s.cellPool, channelID)
 	if err != nil {
 		s.log.Warn("unread reminders: resolve read state", "channel_id", channelID, "error", err)
 		return
@@ -183,18 +177,14 @@ func (s *UnreadSweeper) sweepChannel(ctx context.Context, channelID uuid.UUID, a
 	}
 }
 
-// notify writes the shard-side outbox row and stamps the control-plane
-// cooldown marker. These are two different physical databases (outbox_events
-// lives per-shard, channel_members lives on the control plane — see
-// internal/membership's package doc comment), so true cross-database
-// atomicity isn't available here the way every same-database event in this
-// codebase gets it. Best-effort ordering: the outbox row goes first: if
-// marking the cooldown afterward fails, the worst case is this member gets
-// nudged again slightly sooner than unreadReminderMinGap intends next
-// cycle, not silence — always fail toward "notify," never toward "go
-// quiet."
+// notify writes the outbox row and stamps the cooldown marker. Both
+// outbox_events and channel_members now live in the same cell database, so
+// this could be one transaction; it stays two steps (outbox first, mark
+// after) so that if the mark fails the member is nudged again slightly sooner
+// than intended next cycle rather than going silent — always fail toward
+// "notify."
 func (s *UnreadSweeper) notify(ctx context.Context, channelID, userID uuid.UUID, lastReadSequence, latestSequence int64) error {
-	tx, err := s.shardPool.Begin(ctx)
+	tx, err := s.cellPool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("unread reminders: begin tx: %w", err)
 	}
@@ -220,46 +210,26 @@ func (s *UnreadSweeper) notify(ctx context.Context, channelID, userID uuid.UUID,
 }
 
 // startUnreadReminderSweeper wires up and launches UnreadSweeper for this
-// instance's own shard — same virtual-shard-range resolution and control-
-// plane connection pattern as startRetentionSweeper, just a second,
-// independent background job sharing that same connection.
-func startUnreadReminderSweeper(ctx context.Context, cfg config.Config, log *slog.Logger, m *metrics.Metrics, shardPool *pgxpool.Pool) error {
-	shardsCfg, err := routing.LoadShardsConfig(cfg.ShardsConfigPath)
+// cell. Channels, membership, messages and read-state all live in the cell
+// DB (cellPool); apps/capabilities come from the global config DB.
+func startUnreadReminderSweeper(ctx context.Context, cfg config.Config, log *slog.Logger, m *metrics.Metrics, cellPool *pgxpool.Pool) error {
+	configPool, err := pgstorage.Connect(ctx, cfg.ConfigDSN)
 	if err != nil {
-		return fmt.Errorf("load shards config: %w", err)
-	}
-	var vsMin, vsMax int
-	found := false
-	for _, ps := range shardsCfg.PhysicalShards {
-		if ps.ID == cfg.ShardID {
-			vsMin, vsMax = ps.VirtualShardRange[0], ps.VirtualShardRange[1]
-			found = true
-			break
-		}
-	}
-	if !found {
-		return fmt.Errorf("shard id %q has no virtual_shard_range in shards config", cfg.ShardID)
-	}
-
-	controlPool, err := pgstorage.Connect(ctx, cfg.ControlDSN)
-	if err != nil {
-		return fmt.Errorf("connect control db: %w", err)
+		return fmt.Errorf("connect config db: %w", err)
 	}
 
 	sweeper := &UnreadSweeper{
 		log:            log,
 		m:              m,
-		channelsRepo:   channels.NewRepo(controlPool),
-		membershipRepo: membership.NewRepo(controlPool),
-		appsRepo:       apps.NewRepo(controlPool),
+		channelsRepo:   channels.NewRepo(cellPool),
+		membershipRepo: membership.NewRepo(cellPool),
+		appsRepo:       apps.NewRepo(configPool),
 		messagesRepo:   messages.NewRepo(),
 		readStateRepo:  readstate.NewRepo(),
-		shardPool:      shardPool,
-		vsMin:          vsMin,
-		vsMax:          vsMax,
+		cellPool:       cellPool,
 	}
 	go sweeper.Run(ctx, unreadSweepInterval)
 
-	log.Info("unread reminder sweeper started", "shard", cfg.ShardID, "virtual_shard_range", [2]int{vsMin, vsMax}, "interval", unreadSweepInterval)
+	log.Info("unread reminder sweeper started", "shard", cfg.ShardID, "interval", unreadSweepInterval)
 	return nil
 }

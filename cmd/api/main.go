@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"context"
@@ -38,7 +38,7 @@ import (
 	"github.com/darkoatanasovski/chat/internal/users"
 )
 
-func main() {
+func Run() {
 	cfg, err := config.Load()
 	if err != nil {
 		panic(err)
@@ -49,35 +49,25 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	controlPool, err := pgstorage.Connect(ctx, cfg.ControlDSN)
+	// The global config DB (orgs, apps, credentials) and this cell's own
+	// database (all tenant data for the apps pinned here). No shard-a/shard-b
+	// pair and no any-cell-reaches-any-shard access — see ADR 0006.
+	configPool, err := pgstorage.Connect(ctx, cfg.ConfigDSN)
 	if err != nil {
-		log.Error("connect control db", "error", err)
+		log.Error("connect config db", "error", err)
 		os.Exit(1)
 	}
-	shardADSN, err := pgstorage.Connect(ctx, cfg.ShardADSN)
+	cellPool, err := pgstorage.Connect(ctx, cfg.CellDSN)
 	if err != nil {
-		log.Error("connect shard-a", "error", err)
+		log.Error("connect cell db", "shard", cfg.ShardID, "error", err)
 		os.Exit(1)
 	}
-	shardBDSN, err := pgstorage.Connect(ctx, cfg.ShardBDSN)
-	if err != nil {
-		log.Error("connect shard-b", "error", err)
-		os.Exit(1)
-	}
-	shardPools := pgstorage.ShardPools{"shard-a": shardADSN, "shard-b": shardBDSN}
 
 	redisClient, err := redisstorage.ConnectFromEnv(ctx, cfg.ValkeyAddr, cfg.ValkeySentinelAddrs, cfg.ValkeyMasterName)
 	if err != nil {
 		log.Error("connect redis", "error", err)
 		os.Exit(1)
 	}
-
-	shardsCfg, err := routing.LoadShardsConfig(cfg.ShardsConfigPath)
-	if err != nil {
-		log.Error("load shards config", "error", err)
-		os.Exit(1)
-	}
-	router := routing.NewRouter(shardsCfg)
 
 	tiers, err := quota.LoadTiers(cfg.TiersConfigPath)
 	if err != nil {
@@ -87,13 +77,14 @@ func main() {
 	rateLimiter := quota.NewRateLimiter(redisClient)
 	q := quota.New(tiers, rateLimiter)
 
-	channelsRepo := channels.NewRepo(controlPool)
+	// Tenant-scoped repos read the cell DB; global repos read the config DB.
+	channelsRepo := channels.NewRepo(cellPool)
 	region := routing.NewRegionResolver(redisClient, channelsRepo.RouteSource)
 
-	orgsRepo := organizations.NewRepo(controlPool)
-	orgUsersRepo := orgusers.NewRepo(controlPool)
-	orgInvitesRepo := orgusers.NewInviteRepo(controlPool)
-	appsRepo := apps.NewRepo(controlPool)
+	orgsRepo := organizations.NewRepo(configPool)
+	orgUsersRepo := orgusers.NewRepo(configPool)
+	orgInvitesRepo := orgusers.NewInviteRepo(configPool)
+	appsRepo := apps.NewRepo(configPool)
 
 	// Only cmd/api ever mints or reveals app credentials, so this is the
 	// one place APP_SECRET_ENCRYPTION_KEY is required — see config.go's
@@ -105,7 +96,7 @@ func main() {
 		log.Error("build secretbox for app credentials", "error", err, "hint", "set APP_SECRET_ENCRYPTION_KEY to a base64-encoded 32-byte key, e.g. `openssl rand -base64 32`")
 		os.Exit(1)
 	}
-	appCredentials := apps.NewCredentialRepo(controlPool, secretBox)
+	appCredentials := apps.NewCredentialRepo(configPool, secretBox)
 	appTiers := apps.NewTierResolver(redisClient, appsRepo.TierSource)
 
 	dodoOpts := []option.RequestOption{
@@ -130,11 +121,10 @@ func main() {
 		log:             log,
 		metrics:         m,
 		signer:          auth.NewSigner(cfg.AuthSecret),
-		router:          router,
 		region:          region,
 		quota:           q,
-		controlPool:     controlPool,
-		shardPools:      shardPools,
+		configPool:      configPool,
+		cellPool:        cellPool,
 		orgsSvc:         organizations.NewService(orgsRepo),
 		orgsRepo:        orgsRepo,
 		orgUsersRepo:    orgUsersRepo,
@@ -142,26 +132,25 @@ func main() {
 		appsRepo:        appsRepo,
 		appCredentials:  appCredentials,
 		appTiers:        appTiers,
-		usersSvc:        users.NewService(users.NewRepo(controlPool)),
-		channelsSvc:     channels.NewService(channelsRepo, router),
+		usersSvc:        users.NewService(users.NewRepo(cellPool)),
+		channelsSvc:     channels.NewService(channelsRepo),
 		channelsRepo:    channelsRepo,
-		membershipRepo:  membership.NewRepo(controlPool),
+		membershipRepo:  membership.NewRepo(cellPool),
 		messagesRepo:    messages.NewRepo(),
 		reactionsRepo:   reactions.NewRepo(),
 		pollsRepo:       polls.NewRepo(),
 		readStateRepo:   readstate.NewRepo(),
 		remindersRepo:   reminders.NewRepo(),
-		blocksRepo:      blocks.NewRepo(controlPool),
-		mutesRepo:       mutes.NewRepo(controlPool),
-		bookmarksRepo:   bookmarks.NewRepo(controlPool),
+		blocksRepo:      blocks.NewRepo(cellPool),
+		mutesRepo:       mutes.NewRepo(cellPool),
+		bookmarksRepo:   bookmarks.NewRepo(cellPool),
 		membershipCache: realtime.NewMembershipCache(redisClient, m),
 		blocksCache:     realtime.NewBlocksCache(redisClient, m),
-		peerClient:      newPeerClient(),
 		dodo:            dodoClient,
 
 		translationClient:    translationClient,
 		translationsRepo:     translations.NewRepo(),
-		translationUsageRepo: translations.NewUsageRepo(controlPool),
+		translationUsageRepo: translations.NewUsageRepo(configPool),
 	}
 
 	metricsMux := http.NewServeMux()
@@ -174,7 +163,7 @@ func main() {
 		}
 	}()
 
-	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: app.routes()}
+	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: app.dataRoutes()}
 	go func() {
 		<-ctx.Done()
 		_ = srv.Close()

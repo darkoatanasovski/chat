@@ -1,0 +1,46 @@
+// Per-cell metrics collector (Grafana Alloy) — docs/adr/0006-cell-based-tenant-routing.md.
+//
+// One collector runs per cell. It scrapes THIS cell's api/ws/worker /metrics
+// every 5s, stamps every series with the cell's region + shard, and
+// remote-writes to the central Prometheus. Because the cell PUSHES, the
+// central store never has to reach across regions to pull, and it needs no
+// per-cell target list — adding a cell just means running another collector.
+//
+// REGION and SHARD come from the environment so this one file works for any
+// cell; the scrape targets are the cell's own service hostnames (edit the
+// address prefix when you copy this for a new cell, or template it).
+//
+// (Grafana Alloy is the Grafana-native collector; a Vector or OpenTelemetry
+// Collector with a prometheus_scrape source + prometheus_remote_write sink is
+// a drop-in equivalent if you prefer those.)
+
+prometheus.scrape "cell" {
+  targets = [
+    { __address__ = "us-east-1-a-api:9100", job = "api" },
+    { __address__ = "us-east-1-a-ws:9100", job = "ws" },
+    { __address__ = "us-east-1-a-worker:9100", job = "worker" },
+  ]
+  scrape_interval = "5s"
+  scrape_timeout  = "4s" // must be <= scrape_interval
+  forward_to      = [prometheus.relabel.cell.receiver]
+}
+
+// Stamp region + shard onto every scraped series so one Grafana can slice by
+// cell/region across the whole fleet.
+prometheus.relabel "cell" {
+  rule {
+    target_label = "region"
+    replacement  = sys.env("REGION")
+  }
+  rule {
+    target_label = "shard"
+    replacement  = sys.env("SHARD")
+  }
+  forward_to = [prometheus.remote_write.central.receiver]
+}
+
+prometheus.remote_write "central" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}

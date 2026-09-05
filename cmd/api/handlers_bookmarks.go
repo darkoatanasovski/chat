@@ -6,7 +6,7 @@
 // bookmark_folders/bookmarks live in the control plane, not a shard, the
 // same as internal/blocks — see internal/bookmarks' package doc comment
 // for why.
-package main
+package api
 
 import (
 	"errors"

@@ -30,9 +30,9 @@ func (c *apiClient) do(method, path, token string, body any, out any) error {
 }
 
 // doBasicAuth authenticates with an App's API key/secret (HTTP Basic) —
-// used only by createUser, matching how a business's own backend calls
-// POST /users on behalf of its end-users (cmd/api/middleware.go
-// requireAppCredentials).
+// used only by the POST /apps/token exchange, matching how a business's own
+// backend swaps its raw secret for a short-lived bearer JWT once
+// (cmd/api/middleware.go requireAppCredentials).
 func (c *apiClient) doBasicAuth(method, path, key, secret string, body any, out any) error {
 	return c.doAuth(method, path, func(req *http.Request) {
 		req.SetBasicAuth(key, secret)
@@ -75,13 +75,31 @@ type createUserResp struct {
 	Token  string `json:"token"`
 }
 
-func (c *apiClient) createUser(displayName, region, appKey, appSecret string) (createUserResp, error) {
+// createUser mints an end-user identity. POST /users now runs on the App's
+// short-lived bearer JWT (requireAppJWT), not raw Basic auth — the caller
+// exchanges key/secret for that token once via exchangeAppToken.
+func (c *apiClient) createUser(displayName, region, appToken string) (createUserResp, error) {
 	var out createUserResp
-	err := c.doBasicAuth(http.MethodPost, "/users", appKey, appSecret, map[string]string{
+	err := c.do(http.MethodPost, "/users", appToken, map[string]string{
 		"display_name": displayName,
 		"region":       region,
 	}, &out)
 	return out, err
+}
+
+type appTokenResp struct {
+	Token string `json:"token"`
+}
+
+// exchangeAppToken swaps an App's key/secret for the short-lived bearer JWT
+// that POST /users and the other server-scoped routes now require
+// (POST /apps/token, cmd/api/handlers_users.go handleCreateAppToken).
+func (c *apiClient) exchangeAppToken(appKey, appSecret string) (string, error) {
+	var out appTokenResp
+	if err := c.doBasicAuth(http.MethodPost, "/apps/token", appKey, appSecret, nil, &out); err != nil {
+		return "", err
+	}
+	return out.Token, nil
 }
 
 type createOrgResp struct {

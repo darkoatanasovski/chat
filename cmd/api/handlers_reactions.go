@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"bytes"
@@ -76,7 +76,7 @@ func (a *App) handleAddReaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
+	_, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
 	if !ok {
 		return
 	}
@@ -86,11 +86,6 @@ func (a *App) handleAddReaction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !a.checkReactionRateLimit(w, r, identity) {
-		return
-	}
-
-	if route.HomeRegion != a.cfg.Region {
-		a.forwardToHomeRegion(w, r, route.HomeRegion, body)
 		return
 	}
 
@@ -150,7 +145,7 @@ func (a *App) handleRemoveReaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
+	_, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
 	if !ok {
 		return
 	}
@@ -160,11 +155,6 @@ func (a *App) handleRemoveReaction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !a.checkReactionRateLimit(w, r, identity) {
-		return
-	}
-
-	if route.HomeRegion != a.cfg.Region {
-		a.forwardToHomeRegion(w, r, route.HomeRegion, nil)
 		return
 	}
 

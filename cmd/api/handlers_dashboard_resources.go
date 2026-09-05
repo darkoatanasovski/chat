@@ -6,7 +6,7 @@
 // re-verifies the {app_id}/{channel_id} path actually belongs to the caller's
 // org before touching anything — the same ownership pattern handlers_apps.go
 // already uses for credentials.
-package main
+package api
 
 import (
 	"errors"
@@ -31,11 +31,13 @@ type dashboardEndUserResponse struct {
 	Status      statusResponse `json:"status"`
 }
 
-func toDashboardEndUserResponse(u users.User) dashboardEndUserResponse {
+// region is the app's placement (config DB) — a user's region is its app's
+// region now, not a per-user column.
+func toDashboardEndUserResponse(u users.User, region string) dashboardEndUserResponse {
 	return dashboardEndUserResponse{
 		UserID:      u.UserID.String(),
 		DisplayName: u.DisplayName,
-		Region:      u.HomeRegion,
+		Region:      region,
 		CreatedAt:   u.CreatedAt.Format(rfc3339Milli),
 		Status:      buildStatus(u.LastActiveAt),
 	}
@@ -57,14 +59,13 @@ func (a *App) handleDashboardListEndUsers(w http.ResponseWriter, r *http.Request
 	}
 	out := make([]dashboardEndUserResponse, len(list))
 	for i, u := range list {
-		out[i] = toDashboardEndUserResponse(u)
+		out[i] = toDashboardEndUserResponse(u, app.Region)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 type dashboardCreateEndUserRequest struct {
 	DisplayName string `json:"display_name"`
-	Region      string `json:"region"`
 }
 
 // handleDashboardCreateEndUser backs POST /dashboard/apps/{app_id}/users —
@@ -86,23 +87,19 @@ func (a *App) handleDashboardCreateEndUser(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	req.DisplayName = strings.TrimSpace(req.DisplayName)
-	req.Region = strings.ToLower(strings.TrimSpace(req.Region))
 	if req.DisplayName == "" || len(req.DisplayName) > 128 {
 		writeError(w, http.StatusBadRequest, "display_name is required (max 128 chars)")
 		return
 	}
-	if !validRegions[req.Region] {
-		writeError(w, http.StatusBadRequest, "region must be one of eu, us, asia")
-		return
-	}
-
-	u, err := a.usersSvc.CreateUser(r.Context(), req.DisplayName, req.Region, app.AppID)
+	// No region in the request: an end-user inherits its app's placement
+	// region (config DB), so there's nothing for the operator to choose.
+	u, err := a.usersSvc.CreateUser(r.Context(), req.DisplayName, app.AppID)
 	if err != nil {
 		a.log.Error("create end user", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to create end-user")
 		return
 	}
-	writeJSON(w, http.StatusCreated, toDashboardEndUserResponse(u))
+	writeJSON(w, http.StatusCreated, toDashboardEndUserResponse(u, app.Region))
 }
 
 // ---- playground tokens ----
@@ -158,7 +155,7 @@ func (a *App) handleDashboardMintEndUserToken(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	token, err := a.signer.IssueUserToken(u.UserID.String(), u.HomeRegion, u.AppID, playgroundTokenTTL)
+	token, err := a.signer.IssueUserToken(u.UserID.String(), app.Region, u.AppID, playgroundTokenTTL)
 	if err != nil {
 		a.log.Error("issue playground token", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to issue token")
@@ -177,7 +174,7 @@ func (a *App) handleDashboardMintEndUserToken(w http.ResponseWriter, r *http.Req
 type dashboardChannelResponse struct {
 	ChannelID   string `json:"channel_id"`
 	Name        string `json:"name"`
-	HomeRegion  string `json:"home_region"`
+	Region      string `json:"region"`
 	CreatorName string `json:"creator_name"`
 	MemberCount int    `json:"member_count"`
 	CreatedAt   string `json:"created_at"`
@@ -200,7 +197,7 @@ func (a *App) handleDashboardListChannels(w http.ResponseWriter, r *http.Request
 	out := make([]dashboardChannelResponse, len(list))
 	for i, c := range list {
 		out[i] = dashboardChannelResponse{
-			ChannelID: c.ChannelID.String(), Name: c.Name, HomeRegion: c.HomeRegion,
+			ChannelID: c.ChannelID.String(), Name: c.Name, Region: app.Region,
 			CreatorName: c.CreatorName, MemberCount: c.MemberCount, CreatedAt: c.CreatedAt.Format(rfc3339Milli),
 		}
 	}
@@ -278,7 +275,7 @@ func (a *App) handleDashboardCreateChannel(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	c, err := a.channelsSvc.CreateChannel(r.Context(), req.Name, creatorID, a.cfg.Region, app.AppID)
+	c, err := a.channelsSvc.CreateChannel(r.Context(), req.Name, creatorID, app.AppID)
 	if err != nil {
 		a.log.Error("create channel", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to create channel")
@@ -289,7 +286,7 @@ func (a *App) handleDashboardCreateChannel(w http.ResponseWriter, r *http.Reques
 	}
 
 	writeJSON(w, http.StatusCreated, dashboardChannelResponse{
-		ChannelID: c.ChannelID.String(), Name: c.Name, HomeRegion: c.HomeRegion,
+		ChannelID: c.ChannelID.String(), Name: c.Name, Region: app.Region,
 		CreatorName: creator.DisplayName, MemberCount: 1, CreatedAt: c.CreatedAt.Format(rfc3339Milli),
 	})
 }

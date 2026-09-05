@@ -1,0 +1,80 @@
+# Cloudflare Worker edge router (infra/cloudflare/src/worker.js).
+# Deploy with: wrangler deploy   (from this directory)
+name = "chat-edge-router"
+main = "src/worker.js"
+compatibility_date = "2024-09-01"
+
+# Placement map: apikey/appid -> {region, shard}. Create it once with
+#   wrangler kv namespace create PLACEMENT
+# and paste the returned id below. Populated by infra/cloudflare/sync-kv.sh or
+# by the scheduled() KV refresh (see [triggers] below).
+[[kv_namespaces]]
+binding = "PLACEMENT"
+id = "a090b7e6d5274539a41b2d01174640a1"
+
+# Edge request metrics, out of the box: the Worker writes one datapoint per
+# request (region, shard, status). Query it from Grafana via the Analytics
+# Engine SQL API. DISABLED until Analytics Engine is enabled for the account
+# (Cloudflare dashboard → Workers → Analytics Engine); the Worker's
+# recordAnalytics() is a no-op without this binding, so deploy works either
+# way. Re-enable after turning it on:
+# [[analytics_engine_datasets]]
+# binding = "EDGE_ANALYTICS"
+# dataset = "chat_edge_requests"
+
+# Cron Triggers: refresh the placement KV from PLACEMENT_SYNC_URL on a
+# schedule (the Worker's scheduled() handler), so KV self-heals even if an
+# on-change sync is missed. Every 5 minutes here.
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+# region id -> that region's origin (the per-region api hostname). The Worker
+# proxies data-plane requests to the origin of the app's placement region.
+REGIONS = '{"us-east-1":"https://us-east-1.api.chat.io","eu-west-1":"https://eu-west-1.api.chat.io"}'
+# The global control-plane service (chat control) — org/dashboard/billing.
+CONTROL_ORIGIN = "https://control.chat.io"
+# Public base URL for R2 attachments (the bucket's custom domain). Uploads
+# return "<base>/<key>"; reads are served directly by R2, off the data path.
+ATTACHMENTS_BASE_URL = "https://cdn.chat.io"
+# JSON placements source for the scheduled KV refresh: returns
+# [{"key":"apikey:..","region":"..","shard":".."}, ...]. Point it at a
+# control-plane export endpoint (protect with Access), or leave empty to rely
+# on sync-kv.sh from CI instead.
+PLACEMENT_SYNC_URL = ""
+
+# AUTH_SECRET is a SECRET, not a var — set it so the Worker HMAC-verifies
+# bearer tokens at the edge (must equal the platform's AUTH_SECRET):
+#   wrangler secret put AUTH_SECRET
+# If unset, the Worker reads token claims without verifying and lets the
+# origin verify instead.
+
+# ---- Out-of-the-box services to enable as you adopt each piece -----------
+# (see infra/cloudflare/cloudflare-services.md)
+#
+# R2 for message attachments (S3-compatible, no egress) — used by the
+# /uploads handler in src/worker.js. Bucket created; binding live.
+[[r2_buckets]]
+binding = "ATTACHMENTS"
+bucket_name = "chat-attachments"
+
+# Hyperdrive to accelerate the config Postgres from Workers (if a Worker ever
+# reads it directly, e.g. a Postgres-backed scheduled sync). Create with:
+#   npx wrangler hyperdrive create chat-config --connection-string="postgres://..."
+# then paste the id here:
+# [[hyperdrive]]
+# binding = "CONFIG_DB"
+# id = "REPLACE_WITH_HYPERDRIVE_ID"
+#
+# D1 (serverless SQLite) as an alternative config/placement store — see
+# infra/cloudflare/d1/schema.sql. Create with:
+#   npx wrangler d1 create chat-config
+# [[d1_databases]]
+# binding = "CONFIG_D1"
+# database_name = "chat-config"
+# database_id = "REPLACE_WITH_D1_ID"
+#
+# Queues as an edge event bus (if realtime moves to Workers/Durable Objects):
+# [[queues.producers]]
+# binding = "EVENTS"
+# queue = "chat-events"

@@ -4,7 +4,7 @@
 // hands the console a URL to redirect the browser to, and Dodo tells us the
 // outcome asynchronously over a signed webhook (handleDodoWebhook) rather
 // than a client ever being trusted to say "I paid, upgrade me."
-package main
+package api
 
 import (
 	"context"

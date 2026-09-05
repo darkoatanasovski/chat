@@ -1,43 +1,32 @@
 #!/usr/bin/env bash
-# Applies additive SQL migrations directly via psql, mirroring
-# deploy/migrate.sh's schema_migrations tracking but talking straight to a
-# Postgres server instead of through `docker compose exec` — there's no
-# compose stack in a Railway deployment. Meant to be run from CI (or by
-# hand) against a single Railway Postgres service hosting three logical
-# databases: control, shard_a, shard_b — see docs/deploy/railway.md for why
-# one Postgres instance instead of three for a dev environment.
+# Applies migrations to a Railway deployment's databases: the global config DB
+# (migrations/config) and each cell DB (migrations/cell). Talks straight to
+# Postgres via psql (there's no compose stack on Railway). Runs from CI or by
+# hand. See docs/operations/railway-dev.md.
+#
+# The config DB and every cell DB can be separate Railway Postgres services
+# (one per cell is the isolated model) or, for a cheap single-region dev
+# deployment, distinct logical databases on one Postgres server. This script
+# takes explicit DSNs so it works either way:
+#
+#   CONFIG_DATABASE_URL   -> the config DB (migrations/config)
+#   CELL_DATABASE_URLS    -> comma-separated cell DSNs (migrations/cell each)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-: "${DATABASE_URL:?DATABASE_URL is required - the Postgres connection string, any database name (this script only uses it to find the server, then connects to control/shard_a/shard_b directly)}"
-
-# Drop whatever database name is already in the URL so the rest of this
-# script can connect to control/shard_a/shard_b on the same server.
-base_url="${DATABASE_URL%/*}"
-
-ensure_db() {
-  local name="$1"
-  local exists
-  exists=$(psql "$base_url/postgres" -tAc "SELECT 1 FROM pg_database WHERE datname = '$name'")
-  if [ "$exists" != "1" ]; then
-    echo "==> creating database $name"
-    psql "$base_url/postgres" -v ON_ERROR_STOP=1 -c "CREATE DATABASE $name;"
-  fi
-}
+: "${CONFIG_DATABASE_URL:?CONFIG_DATABASE_URL is required (the global config DB DSN)}"
+: "${CELL_DATABASE_URLS:?CELL_DATABASE_URLS is required (comma-separated cell DB DSNs)}"
 
 apply() {
-  local name="$1"
+  local dsn="$1"
   local dir="$2"
-  local dsn="$base_url/$name"
-  echo "==> applying $dir/*.sql to $name"
+  echo "==> applying $dir/*.sql to $(echo "$dsn" | sed -E 's#://[^@]+@#://***@#')"
   psql "$dsn" -v ON_ERROR_STOP=1 -c \
     "CREATE TABLE IF NOT EXISTS schema_migrations (filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());"
 
   for f in "$dir"/*.sql; do
-    local fname
-    fname="$(basename "$f")"
-    local already
-    already=$(psql "$dsn" -tAc "SELECT 1 FROM schema_migrations WHERE filename = '$fname'")
+    local fname; fname="$(basename "$f")"
+    local already; already=$(psql "$dsn" -tAc "SELECT 1 FROM schema_migrations WHERE filename = '$fname'")
     if [ "$already" = "1" ]; then
       echo "    skip $fname (already applied)"
       continue
@@ -48,12 +37,11 @@ apply() {
   done
 }
 
-ensure_db control
-ensure_db shard_a
-ensure_db shard_b
+apply "$CONFIG_DATABASE_URL" migrations/config
 
-apply control migrations/control
-apply shard_a migrations/shard
-apply shard_b migrations/shard
+IFS=',' read -ra cells <<< "$CELL_DATABASE_URLS"
+for dsn in "${cells[@]}"; do
+  apply "$dsn" migrations/cell
+done
 
 echo "==> migrations complete"

@@ -1,12 +1,13 @@
-// cmd/gateway is the WebSocket edge (INSTRUCTIONS.md §17): it authenticates
-// connections, tracks them locally, and shares one Kafka consumer group
-// with every other gateway instance across every region, so any number of
-// them can run concurrently and Kafka splits the message.created stream
-// across whichever are alive. Each delivers directly to its own local
-// connections and routes everyone else's delivery to whichever instance
-// actually holds them, over Redis Pub/Sub (see internal/realtime/pubsub.go
-// and fanout.go). It carries no business logic beyond that.
-package main
+// cmd/ws is the WebSocket edge for one cell (INSTRUCTIONS.md §17;
+// docs/adr/0006-cell-based-tenant-routing.md — the service formerly named
+// gateway). It authenticates connections, tracks them locally, and shares one
+// Kafka consumer group with the OTHER ws instances IN ITS OWN CELL, consuming
+// only this cell's Kafka — there is no global cross-region fanout anymore,
+// because every member of a channel lives in the same cell as the channel.
+// Each instance delivers directly to its own local connections and routes
+// everyone else's delivery to whichever instance holds them, over Redis
+// Pub/Sub (internal/realtime/pubsub.go, fanout.go). No business logic beyond that.
+package ws
 
 import (
 	"context"
@@ -34,13 +35,13 @@ import (
 	"github.com/darkoatanasovski/chat/internal/users"
 )
 
-func main() {
+func Run() {
 	cfg, err := config.Load()
 	if err != nil {
 		panic(err)
 	}
-	log := logging.New("gateway", cfg.Region)
-	m := metrics.New("chat_gateway")
+	log := logging.New("ws", cfg.Region)
+	m := metrics.New("chat_ws")
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -51,9 +52,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	controlPool, err := pgstorage.Connect(ctx, cfg.ControlDSN)
+	// This cell's own database (tenant data: membership, blocks, users) and
+	// the global config DB (apps/capabilities).
+	cellPool, err := pgstorage.Connect(ctx, cfg.CellDSN)
 	if err != nil {
-		log.Error("connect control db", "error", err)
+		log.Error("connect cell db", "error", err)
+		os.Exit(1)
+	}
+	configPool, err := pgstorage.Connect(ctx, cfg.ConfigDSN)
+	if err != nil {
+		log.Error("connect config db", "error", err)
 		os.Exit(1)
 	}
 
@@ -80,16 +88,15 @@ func main() {
 	// comment for why that distinction matters now that every gateway
 	// shares one group.
 	dedup := realtime.NewDedup(redisClient, cfg.KafkaConsumerGroup, m)
-	membershipRepo := membership.NewRepo(controlPool)
-	blocksRepo := blocks.NewRepo(controlPool)
+	membershipRepo := membership.NewRepo(cellPool)
+	blocksRepo := blocks.NewRepo(cellPool)
 	// Backs ConnectHandler's typing_events/connection_events capability
-	// gates — the same Repo cmd/api uses for every other per-app setting,
-	// just reached from the gateway process instead.
-	appsRepo := apps.NewRepo(controlPool)
-	// Presence: same Service cmd/api uses (internal/users), just wired up
-	// here too so a live WebSocket connection is itself a first-class
+	// gates — apps live in the global config DB, the same Repo cmd/api uses.
+	appsRepo := apps.NewRepo(configPool)
+	// Presence: same Service cmd/api uses (internal/users), reading this
+	// cell's users, so a live WebSocket connection is itself a first-class
 	// activity signal, not only the REST mutation handlers.
-	presenceSvc := users.NewService(users.NewRepo(controlPool))
+	presenceSvc := users.NewService(users.NewRepo(cellPool))
 	blocksCache := realtime.NewBlocksCache(redisClient, m)
 	publisher := realtime.NewPublisher(redisClient, m)
 
@@ -128,8 +135,9 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/connect", connectHandler)
 	mux.Handle("/healthz", health.Handler(map[string]health.Checker{
-		"redis":   func(ctx context.Context) error { return redisClient.Ping(ctx).Err() },
-		"control": func(ctx context.Context) error { return controlPool.Ping(ctx) },
+		"redis":  func(ctx context.Context) error { return redisClient.Ping(ctx).Err() },
+		"cell":   func(ctx context.Context) error { return cellPool.Ping(ctx) },
+		"config": func(ctx context.Context) error { return configPool.Ping(ctx) },
 	}))
 
 	metricsMux := http.NewServeMux()
@@ -150,7 +158,7 @@ func main() {
 		_ = srv.Close()
 	}()
 
-	log.Info("gateway listening", "addr", cfg.HTTPAddr, "region", cfg.Region, "active_connections", hub.ActiveConnections())
+	log.Info("ws listening", "addr", cfg.HTTPAddr, "region", cfg.Region, "active_connections", hub.ActiveConnections())
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Error("http server", "error", err)
 		os.Exit(1)

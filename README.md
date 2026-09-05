@@ -1,72 +1,81 @@
 # Chat Platform
 
-A globally-distributed, horizontally-scalable chat backend — built to the V1
-scope and architectural rules in [`.claude/INSTRUCTIONS.md`](.claude/INSTRUCTIONS.md):
-users, channels, membership, sending/retrieving messages, listing a user's
-channels, realtime delivery, and tier-based quotas, on an architecture
-designed to scale to millions of connections without a rewrite.
+A globally-distributed, horizontally-scalable chat backend built on a
+**cell-based architecture**: users, channels, membership, messages, realtime
+delivery, and tier-based quotas, where each tenant (App) is pinned to one
+self-contained cell and a thin edge router sends every request to the right
+one. See [`docs/adr/0006-cell-based-tenant-routing.md`](docs/adr/0006-cell-based-tenant-routing.md)
+and [`infra/README.md`](infra/README.md) for the full design.
 
 ```
-Client → nearest Gateway (WebSocket) / API (REST)
-             │
-        Quota (Redis)         Channel Router
-                                    │
-                          home_region → virtual_shard → physical_shard
-                                    │
-                              Postgres (shard-local write)
-                                    │
-                          Outbox event → Kafka (channel_id-keyed)
-                                    │
-                    every Gateway consumes, delivers to its
-                       local connections that are channel members
+            api.chat.io (global)            us-east-1.api.chat.io (direct)
+                  │                                   │
+            ┌─────▼──────┐  apikey (?api_key= or token claim)
+            │   router   │  → config DB: apikey → {region, shard}
+            │ cmd/router │  → topology.yaml: shard → api/ws endpoints
+            └─────┬──────┘  → reverse-proxy to that cell
+      ┌───────────┼───────────────┐
+  region us-east-1            region eu-west-1
+  ┌───────────────────┐      ┌───────────────────┐
+  │ cell us-east-1-a  │      │ cell eu-west-1-a  │
+  │  2×api 2×ws        │      │  ...              │
+  │  2×worker          │      │                   │
+  │  Postgres+Kafka+   │      │                   │
+  │  Valkey (own)      │      │                   │
+  └───────────────────┘      └───────────────────┘
+       every App (apikey) lives entirely in ONE cell
 ```
 
-Three logical regions (`eu`/`us`/`asia`), simulated locally as three `api` +
-`gateway` pairs sharing one Kafka broker and one Redis-compatible cache; two
-physical Postgres message shards behind 4096 virtual shards; a
-transactional outbox driving realtime fanout. See
-[`docs/platform/architecture-overview.md`](docs/platform/architecture-overview.md)
-for the full picture.
+A **cell** (= a shard) is self-contained — its own Postgres, Kafka, and cache,
+running 2+ each of `api`, `ws`, and `worker`. A **region** holds one or more
+cells. The only global dependency is a small **config** database (the tenant
+registry + per-app placement and settings), read cache-first by the router and
+every cell service.
+
+Everything is one binary — `chat api` / `chat ws` / `chat worker` /
+`chat router` — selected by its first argument.
 
 ## Repository layout
 
 ```
-cmd/            api, gateway, worker — the three deployable services
-internal/       domain logic + infra wrappers (see docs/platform/architecture-overview.md)
-migrations/     additive-only SQL, control-plane and shard schemas
-deploy/         docker-compose.yml, shard/tier config, migration + seed scripts
-tools/loadtest/ connection/throughput/latency load-testing CLI
-demo/           minimal Next.js app for exercising the platform by hand
+cmd/chat/       the single binary; dispatches to a role (api/ws/worker/router/og)
+cmd/{api,ws,worker,router,ogservice}/  the role implementations
+internal/       domain logic + infra wrappers
+  appconfig/    apikey → cell resolver over the config DB (cache-first)
+  topology/     loads infra/topology.yaml (regions → cells → endpoints)
+infra/          topology.yaml + the routing/deployment model (start here)
+migrations/     config/ (global) and cell/ (per-cell) additive SQL
+deploy/         docker-compose.yml, single Dockerfile, migrate + seed, railway/
 docs/           architecture, API reference, operations, ADRs (start at docs/README.md)
-.claude/skills/ platform-up, new-migration, new-event, loadtest
 ```
 
 ## Quick start
 
 ```bash
 cp .env.example .env
-make up                # build + start all 13 containers
-./deploy/migrate.sh    # apply schema (idempotent)
-./deploy/seed.sh        # optional: demo users + a channel + a message
+make up                # build the chat image + start router, config DB, one cell
+./deploy/migrate.sh    # apply config + cell schema (idempotent)
+./deploy/seed.sh        # optional: demo org/app/users/channel
 
 cd demo && npm install && npm run dev   # http://localhost:3000
 ```
 
-Full walkthrough: [`docs/operations/local-development.md`](docs/operations/local-development.md).
-API reference: [`docs/api/rest-api.md`](docs/api/rest-api.md) and
-[`docs/api/websocket-protocol.md`](docs/api/websocket-protocol.md).
+The router is on `http://localhost:8080` (the global endpoint); the cell's api
+and ws are also exposed directly on `8081`/`8091` for debugging. Full
+walkthrough: [`docs/operations/local-development.md`](docs/operations/local-development.md);
+Railway: [`docs/operations/railway-dev.md`](docs/operations/railway-dev.md).
 
 ## Documentation
 
 Everything else — architecture deep-dives, API reference, operations,
 architecture decision records — is indexed at
-[`docs/README.md`](docs/README.md).
+[`docs/README.md`](docs/README.md). Note: some platform deep-dives under
+`docs/platform/` still describe the pre-cell (virtual-shard / home-region)
+design and are being updated to match ADR 0006.
 
 ## Status
 
-V1 feature set plus a few additive extras built since (reactions, presence,
-threaded replies): still no edit/delete, search, attachments, or E2EE. The
-architecture is built so each addition is an additive Kafka event + package,
-not a redesign — see
-[`docs/platform/kafka-and-events.md`](docs/platform/kafka-and-events.md) and
-the `new-event` skill.
+Cell-based routing (single binary, config DB, edge router, per-cell data) is
+in and compiles clean (`go build ./...`, `go vet ./...`). The integration test
+suite and the `docs/platform/` deep-dives are mid-migration to the new model;
+see the ADR for the authoritative design.

@@ -1,0 +1,18 @@
+# EXPERIMENTAL Durable Objects realtime worker (src/worker.js). Separate from
+# the edge router so it can be evaluated/deployed independently.
+# Deploy: wrangler deploy   (from this directory)
+name = "chat-realtime"
+main = "src/worker.js"
+compatibility_date = "2024-09-01"
+
+# One Durable Object class: ChannelRoom (one instance per channel_id).
+[[durable_objects.bindings]]
+name = "CHANNEL"
+class_name = "ChannelRoom"
+
+# Durable Objects require a migration declaring new classes. SQLite-backed
+# classes (new_sqlite_classes) are the modern default and are available on the
+# Workers free plan; WebSocket hibernation works with them.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ChannelRoom"]

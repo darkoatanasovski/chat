@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"bytes"
@@ -55,7 +55,7 @@ func (a *App) handleSendCustomEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
+	_, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
 	if !ok {
 		return
 	}
@@ -68,11 +68,6 @@ func (a *App) handleSendCustomEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	if !app.ChannelCapabilities.CustomEvents {
 		writeError(w, http.StatusForbidden, "custom events are not enabled for this app")
-		return
-	}
-
-	if route.HomeRegion != a.cfg.Region {
-		a.forwardToHomeRegion(w, r, route.HomeRegion, body)
 		return
 	}
 

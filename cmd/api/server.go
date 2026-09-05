@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"context"
@@ -7,19 +7,52 @@ import (
 	"github.com/darkoatanasovski/chat/internal/platform/health"
 )
 
-func (a *App) routes() http.Handler {
+// dataRoutes is the per-cell DATA plane (docs/adr/0006-cell-based-tenant-routing.md):
+// the apikey/user-token-scoped surface a business's own end-users exercise.
+// The edge router sends each of these to the one cell the app is pinned to,
+// so every request here is local to this instance's cell.
+func (a *App) dataRoutes() http.Handler {
 	mux := http.NewServeMux()
+	a.registerDataRoutes(mux)
+	mux.Handle("GET /healthz", health.Handler(map[string]health.Checker{
+		"config": func(ctx context.Context) error { return a.configPool.Ping(ctx) },
+		"cell":   func(ctx context.Context) error { return a.cellPool.Ping(ctx) },
+	}))
+	return corsMiddleware(a.cfg.CORSAllowedOrigins, mux)
+}
 
-	mux.HandleFunc("POST /organizations", a.instrument("create_org", a.handleCreateOrg))
-	mux.HandleFunc("POST /organizations/{org_id}/apps", a.instrument("create_app", a.requireOrgAuth(a.handleCreateApp)))
-	mux.HandleFunc("GET /organizations/{org_id}/apps", a.instrument("list_apps", a.requireOrgAuth(a.handleListApps)))
-	mux.HandleFunc("PATCH /apps/{app_id}", a.instrument("update_app", a.requireOrgAuth(a.handleUpdateApp)))
-	mux.HandleFunc("POST /apps/{app_id}/credentials", a.instrument("create_app_credential", a.requireOrgAuth(a.handleCreateAppCredential)))
-	mux.HandleFunc("GET /apps/{app_id}/credentials", a.instrument("list_app_credentials", a.requireOrgAuth(a.handleListAppCredentials)))
-	mux.HandleFunc("DELETE /apps/{app_id}/credentials/{credential_id}", a.instrument("revoke_app_credential", a.requireOrgAuth(a.handleRevokeAppCredential)))
-	mux.HandleFunc("GET /apps/{app_id}/credentials/{credential_id}/reveal", a.instrument("reveal_app_credential", a.requireOrgAuth(a.handleRevealAppCredential)))
+// controlRoutes is the global CONTROL plane: the org/dashboard/billing surface
+// (config DB, plus cross-cell reads/writes for dashboard admin). It runs as
+// its own service (RunControl); the router forwards control-plane paths here.
+func (a *App) controlRoutes() http.Handler {
+	mux := http.NewServeMux()
+	a.registerControlRoutes(mux)
+	checks := map[string]health.Checker{
+		"config": func(ctx context.Context) error { return a.configPool.Ping(ctx) },
+	}
+	for key, pool := range a.cellPools {
+		p := pool
+		checks["cell:"+key] = func(ctx context.Context) error { return p.Ping(ctx) }
+	}
+	mux.Handle("GET /healthz", health.Handler(checks))
+	return corsMiddleware(a.cfg.CORSAllowedOrigins, mux)
+}
 
-	mux.HandleFunc("POST /apps/token", a.instrument("create_app_token", a.requireAppCredentials(a.handleCreateAppToken)))
+// testRoutes mounts BOTH planes on one mux — used only by the in-process test
+// harness (handlers_test.go), which exercises control and data endpoints
+// against a single *App. In production the two planes run as separate
+// services (RunAPI / RunControl) behind the router.
+func (a *App) testRoutes() http.Handler {
+	mux := http.NewServeMux()
+	a.registerDataRoutes(mux)
+	a.registerControlRoutes(mux)
+	return corsMiddleware(a.cfg.CORSAllowedOrigins, mux)
+}
+
+func (a *App) registerDataRoutes(mux *http.ServeMux) {
+	// POST /users runs on the short-lived app JWT minted by /apps/token
+	// (a control-plane route); the router forwards it here by the JWT's
+	// api_key claim.
 	mux.HandleFunc("POST /users", a.instrument("create_user", a.requireAppJWT(a.handleCreateUser)))
 
 	mux.HandleFunc("POST /channels", a.instrument("create_channel", a.requireAuth(a.handleCreateChannel)))
@@ -65,11 +98,26 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /bookmarks", a.instrument("list_bookmarks", a.requireAuth(a.handleListBookmarks)))
 	mux.HandleFunc("PATCH /bookmarks/{bookmark_id}", a.instrument("move_bookmark", a.requireAuth(a.handleMoveBookmark)))
 	mux.HandleFunc("DELETE /bookmarks/{bookmark_id}", a.instrument("delete_bookmark", a.requireAuth(a.handleDeleteBookmark)))
+}
+
+func (a *App) registerControlRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /organizations", a.instrument("create_org", a.handleCreateOrg))
+	mux.HandleFunc("POST /organizations/{org_id}/apps", a.instrument("create_app", a.requireOrgAuth(a.handleCreateApp)))
+	mux.HandleFunc("GET /organizations/{org_id}/apps", a.instrument("list_apps", a.requireOrgAuth(a.handleListApps)))
+	mux.HandleFunc("PATCH /apps/{app_id}", a.instrument("update_app", a.requireOrgAuth(a.handleUpdateApp)))
+	mux.HandleFunc("POST /apps/{app_id}/credentials", a.instrument("create_app_credential", a.requireOrgAuth(a.handleCreateAppCredential)))
+	mux.HandleFunc("GET /apps/{app_id}/credentials", a.instrument("list_app_credentials", a.requireOrgAuth(a.handleListAppCredentials)))
+	mux.HandleFunc("DELETE /apps/{app_id}/credentials/{credential_id}", a.instrument("revoke_app_credential", a.requireOrgAuth(a.handleRevokeAppCredential)))
+	mux.HandleFunc("GET /apps/{app_id}/credentials/{credential_id}/reveal", a.instrument("reveal_app_credential", a.requireOrgAuth(a.handleRevealAppCredential)))
+
+	// A business's backend exchanges its app key+secret (Basic auth) for a
+	// short-lived JWT here, then uses that JWT against the data plane
+	// (POST /users, etc.). This is a config-DB operation, so it lives in the
+	// control plane rather than any single cell.
+	mux.HandleFunc("POST /apps/token", a.instrument("create_app_token", a.requireAppCredentials(a.handleCreateAppToken)))
 
 	// Dashboard: real per-person accounts (internal/orgusers) on top of the
-	// same organizations. Signup/login/accept-invite are public, matching
-	// this V1's existing trust model; everything else needs a dashboard
-	// session, team management needs the owner role specifically.
+	// same organizations.
 	mux.HandleFunc("POST /dashboard/signup", a.instrument("dashboard_signup", a.handleDashboardSignup))
 	mux.HandleFunc("POST /dashboard/login", a.instrument("dashboard_login", a.handleDashboardLogin))
 	mux.HandleFunc("POST /dashboard/invites/{token}/accept", a.instrument("dashboard_accept_invite", a.handleAcceptInvite))
@@ -82,11 +130,6 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /dashboard/team/invites", a.instrument("dashboard_list_invites", a.requireOwnerRole(a.handleListInvites)))
 	mux.HandleFunc("DELETE /dashboard/team/{user_id}", a.instrument("dashboard_remove_member", a.requireOwnerRole(a.handleRemoveTeamMember)))
 
-	// End-user and channel administration, scoped to one app at a time —
-	// lets an org operator create end-users/channels and manage channel
-	// membership directly from the dashboard, alongside the same
-	// app-credentialed /users and /channels routes a business's own
-	// backend would use programmatically.
 	mux.HandleFunc("GET /dashboard/apps/{app_id}/users", a.instrument("dashboard_list_end_users", a.requireOrgUser(a.handleDashboardListEndUsers)))
 	mux.HandleFunc("POST /dashboard/apps/{app_id}/users", a.instrument("dashboard_create_end_user", a.requireOrgUser(a.handleDashboardCreateEndUser)))
 	mux.HandleFunc("POST /dashboard/apps/{app_id}/users/{user_id}/token", a.instrument("dashboard_mint_end_user_token", a.requireOrgUser(a.handleDashboardMintEndUserToken)))
@@ -102,29 +145,6 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /dashboard/apps/{app_id}/polls", a.instrument("dashboard_app_polls", a.requireOrgUser(a.handleDashboardAppPolls)))
 	mux.HandleFunc("GET /dashboard/apps/{app_id}/translations", a.instrument("dashboard_app_translations", a.requireOrgUser(a.handleDashboardAppTranslations)))
 
-	// Billing: self-serve plan upgrades via Dodo Payments hosted checkout
-	// (see cmd/api/handlers_billing.go). The webhook route is deliberately
-	// NOT under /dashboard/* and carries no bearer auth — it's Dodo's
-	// servers calling us, authenticated by webhook signature instead.
 	mux.HandleFunc("POST /dashboard/billing/checkout", a.instrument("dashboard_billing_checkout", a.requireOrgUser(a.handleCreateBillingCheckout)))
 	mux.HandleFunc("POST /dodo/webhook", a.instrument("dodo_webhook", a.handleDodoWebhook))
-
-	// Apps/credentials management: the dashboard calls these SAME routes
-	// directly with its org-user session token — requireOrgAuth already
-	// accepts either an org-admin token or a dashboard session and resolves
-	// the same OrgIdentity either way, so no separate /dashboard/* routes
-	// are needed here.
-	checks := map[string]health.Checker{
-		"control": func(ctx context.Context) error { return a.controlPool.Ping(ctx) },
-	}
-	for _, ps := range a.router.PhysicalShards() {
-		pool, err := a.shardPools.Get(ps.ID)
-		if err != nil {
-			continue
-		}
-		checks[ps.ID] = pool.Ping
-	}
-	mux.Handle("GET /healthz", health.Handler(checks))
-
-	return corsMiddleware(a.cfg.CORSAllowedOrigins, mux)
 }

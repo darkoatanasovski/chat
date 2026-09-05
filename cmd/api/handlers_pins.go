@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"errors"
@@ -34,17 +34,12 @@ func (a *App) handlePinMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
+	_, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
 	if !ok {
 		return
 	}
 
 	if !a.checkPinRateLimit(w, r, identity) {
-		return
-	}
-
-	if route.HomeRegion != a.cfg.Region {
-		a.forwardToHomeRegion(w, r, route.HomeRegion, nil)
 		return
 	}
 
@@ -93,17 +88,12 @@ func (a *App) handleUnpinMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
+	_, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
 	if !ok {
 		return
 	}
 
 	if !a.checkPinRateLimit(w, r, identity) {
-		return
-	}
-
-	if route.HomeRegion != a.cfg.Region {
-		a.forwardToHomeRegion(w, r, route.HomeRegion, nil)
 		return
 	}
 

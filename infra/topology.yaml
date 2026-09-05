@@ -1,0 +1,59 @@
+# Platform topology: regions -> cells (shards) -> per-cell infrastructure.
+#
+# This file is the single source of truth for "what cells exist and where".
+# It replaces deploy/shards.yaml (virtual-shard ranges) entirely: routing is
+# now tenant-based (apikey -> cell), resolved from the `config` database, not
+# from a hash of channel_id. See docs/adr/0006-cell-based-tenant-routing.md.
+#
+# What lives WHERE:
+#   - This file:      the fixed topology (regions, cells, endpoints, infra).
+#   - The config DB:  the dynamic placement (which App is pinned to which
+#                     cell) + per-App credentials and settings.
+#   - The router:     reads apikey -> cell from the config DB, then looks up
+#                     the cell's api/ws endpoints here to proxy the request.
+#
+# A "cell" is a self-contained shard: its own Postgres, Kafka, and cache, plus
+# `replicas` copies each of api/ws/worker. Nothing in one cell reads or writes
+# another cell's data. Scaling is two knobs: raise `replicas` within a cell,
+# or add a new cell entry and start pinning new Apps to it in the config DB.
+
+# The single global control plane. Every service and the router read App
+# placement/credentials/settings from here, cache-first (invalidate on change,
+# else 1-day TTL). This is the only datastore shared across cells.
+config_db:
+  dsn_env: CONFIG_DSN
+
+regions:
+  - id: us-east-1
+    # Direct per-region hostname (bypasses global apikey routing); the global
+    # hostname api.chat.io is served by the router in front of all regions.
+    hostname: us-east-1.api.chat.io
+    cells:
+      - id: us-east-1-a
+        replicas: { api: 2, ws: 2, worker: 2 }
+        postgres: { dsn_env: SHARD_US_EAST_1_A_DSN }
+        kafka:    { brokers_env: KAFKA_US_EAST_1_A_BROKERS }
+        cache:    { addr_env: CACHE_US_EAST_1_A_ADDR }
+        # Service DNS the router proxies to. Locally these are the
+        # docker-compose service names (deploy/docker-compose.yml); in
+        # production they'd be the cell's internal load-balanced hostnames.
+        endpoints:
+          api: http://us-east-1-a-api:8080
+          ws:  http://us-east-1-a-ws:8080
+
+  - id: eu-west-1
+    hostname: eu-west-1.api.chat.io
+    cells:
+      - id: eu-west-1-a
+        replicas: { api: 2, ws: 2, worker: 2 }
+        postgres: { dsn_env: SHARD_EU_WEST_1_A_DSN }
+        kafka:    { brokers_env: KAFKA_EU_WEST_1_A_BROKERS }
+        cache:    { addr_env: CACHE_EU_WEST_1_A_ADDR }
+        endpoints:
+          api: http://eu-west-1-a-api.internal:8080
+          ws:  http://eu-west-1-a-ws.internal:8080
+
+# To add a cell: copy a `cells` entry, give it a new id, provision its
+# postgres/kafka/cache (new *_DSN / *_BROKERS / *_ADDR env vars), apply the
+# shard migrations to its Postgres, and start pinning new Apps' `shard` to it
+# in the config DB. No existing tenant moves; no hash changes.

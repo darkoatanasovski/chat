@@ -111,6 +111,12 @@ type App struct {
 	OrgID     int64
 	Name      string
 	CreatedAt time.Time
+	// Region/Shard are the app's cell placement (config DB). Every user,
+	// channel, and message of this app lives in that cell — see
+	// docs/adr/0006-cell-based-tenant-routing.md. Empty until the app is
+	// assigned to a cell at provisioning time.
+	Region string
+	Shard  string
 	// MaxThreadDepth caps how many levels deep a reply chain
 	// (messages.parent_id) is allowed to nest for this app — 0 means no
 	// cap. The first per-app, owner-configurable setting on this table
@@ -144,15 +150,22 @@ type App struct {
 // appColumns/scanApp are shared by every query below that returns a full
 // App row, so the "5 plain columns + 1 jsonb column that needs unmarshaling
 // afterward" shape only has to be written once.
-const appColumns = `app_id, org_id, name, created_at, max_thread_depth, message_edit_enabled,
+const appColumns = `app_id, org_id, name, created_at, region, shard, max_thread_depth, message_edit_enabled,
 		channel_capabilities, max_message_length, enabled_commands, dynamic_partitioning`
 
 func scanApp(row pgx.Row) (App, error) {
 	var a App
 	var capsRaw []byte
-	if err := row.Scan(&a.AppID, &a.OrgID, &a.Name, &a.CreatedAt, &a.MaxThreadDepth, &a.MessageEditEnabled,
+	var region, shard *string
+	if err := row.Scan(&a.AppID, &a.OrgID, &a.Name, &a.CreatedAt, &region, &shard, &a.MaxThreadDepth, &a.MessageEditEnabled,
 		&capsRaw, &a.MaxMessageLength, &a.EnabledCommands, &a.DynamicPartitioning); err != nil {
 		return App{}, err
+	}
+	if region != nil {
+		a.Region = *region
+	}
+	if shard != nil {
+		a.Shard = *shard
 	}
 	if err := json.Unmarshal(capsRaw, &a.ChannelCapabilities); err != nil {
 		return App{}, fmt.Errorf("apps: unmarshal channel_capabilities: %w", err)
@@ -168,11 +181,16 @@ func NewRepo(pool *pgxpool.Pool) *Repo {
 	return &Repo{pool: pool}
 }
 
-func (r *Repo) Create(ctx context.Context, orgID int64, name string) (App, error) {
+// Create provisions an app and pins it to a cell (region, shard). Placement
+// is immutable for now — every user, channel, and message the app ever has
+// will live in that cell (docs/adr/0006-cell-based-tenant-routing.md). The
+// caller decides the placement policy; today cmd/api pins a new app to the
+// cell that handled its creation (see handleCreateApp).
+func (r *Repo) Create(ctx context.Context, orgID int64, name, region, shard string) (App, error) {
 	a, err := scanApp(r.pool.QueryRow(ctx, `
-		INSERT INTO apps (org_id, name) VALUES ($1, $2)
+		INSERT INTO apps (org_id, name, region, shard) VALUES ($1, $2, $3, $4)
 		RETURNING `+appColumns+`
-	`, orgID, name))
+	`, orgID, name, region, shard))
 	if err != nil {
 		return App{}, fmt.Errorf("apps: create: %w", err)
 	}

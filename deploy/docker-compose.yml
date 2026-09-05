@@ -1,338 +1,195 @@
-version: "3.9"
+# Local cell-based stack (docs/adr/0006-cell-based-tenant-routing.md).
+#
+#   router  →  cell us-east-1-a  (its own Postgres + Kafka + Valkey,
+#                                 running api / ws / worker)
+#   config-postgres              (the one global control-plane DB)
+#
+# One self-contained cell is enough to exercise the whole model locally: the
+# router resolves apikey→cell from the config DB and proxies to the cell's
+# api/ws. To add a second cell (or region), copy the `us-east-1-a-*` service
+# block under a new id, give it its own Postgres/Kafka/Valkey, add its
+# Postgres to deploy/migrate.sh's CELL_DB_SERVICES, and add it to
+# infra/topology.yaml. Production runs 2+ api/ws/worker replicas per cell
+# (infra/topology.yaml `replicas`); locally one of each keeps the stack light
+# (scale any role with `docker compose up --scale us-east-1-a-api=2`).
 
 x-app-build: &app-build
   context: ..
-  dockerfile: deploy/docker/Dockerfile
+  # Defaults to the multi-stage build (compiles Go in Docker). `make up-prebuilt`
+  # sets CHAT_DOCKERFILE=deploy/docker/Dockerfile.prebuilt to use a host-built
+  # binary instead, avoiding an in-container `go build` that can OOM Docker.
+  dockerfile: ${CHAT_DOCKERFILE:-deploy/docker/Dockerfile}
 
-x-common-env: &common-env
-  CONTROL_DSN: ${CONTROL_DSN}
-  SHARD_A_DSN: ${SHARD_A_DSN}
-  SHARD_B_DSN: ${SHARD_B_DSN}
-  VALKEY_ADDR: ${VALKEY_ADDR}
-  VALKEY_SENTINEL_ADDRS: ${VALKEY_SENTINEL_ADDRS}
-  VALKEY_MASTER_NAME: ${VALKEY_MASTER_NAME}
-  KAFKA_BROKERS: ${KAFKA_BROKERS}
+# Shared env for every role running inside cell us-east-1-a.
+x-cell-env: &cell-env
+  CONFIG_DSN: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@config-postgres:5432/${POSTGRES_DB}?sslmode=disable
+  CELL_DSN: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@us-east-1-a-postgres:5432/${POSTGRES_DB}?sslmode=disable
+  VALKEY_ADDR: us-east-1-a-valkey:6379
+  KAFKA_BROKERS: us-east-1-a-kafka:9092
   AUTH_SECRET: ${AUTH_SECRET}
   APP_SECRET_ENCRYPTION_KEY: ${APP_SECRET_ENCRYPTION_KEY}
-  SHARDS_CONFIG: /etc/chat/shards.yaml
   TIERS_CONFIG: /etc/chat/tiers.yaml
-  PEER_API_EU_URL: http://api-eu:8080
-  PEER_API_US_URL: http://api-us:8080
-  PEER_API_ASIA_URL: http://api-asia:8080
-  # Only cmd/api actually calls this (url_enrichment's enrichLinkPreview) —
-  # harmless for gateway/worker, which load the same shared config but
-  # never read this field.
+  TOPOLOGY_CONFIG: /etc/chat/topology.yaml
+  REGION: us-east-1
+  SHARD_ID: us-east-1-a
   OG_SERVICE_URL: http://og-service:8080
-  # Only cmd/api calls this (the "translations" capability's
-  # handleTranslateMessage) — harmless for gateway/worker. Unset/empty is a
-  # valid "translation not configured" state (internal/translations.Client
-  # reports it as a 503 rather than failing startup), so this is safe to
-  # leave blank in any environment that isn't exercising translations.
   AZURE_TRANSLATOR_KEY: ${AZURE_TRANSLATOR_KEY}
   AZURE_TRANSLATOR_REGION: ${AZURE_TRANSLATOR_REGION}
 
 services:
-  postgres-control:
+  # ---- global control plane ------------------------------------------------
+  config-postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     ports: ["5433:5432"]
-    volumes: ["control-data:/var/lib/postgresql/data"]
+    volumes: ["config-data:/var/lib/postgresql/data"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  postgres-shard-a:
+  # ---- edge router ---------------------------------------------------------
+  router:
+    build: *app-build
+    command: ["router"]
+    depends_on: [config-postgres, control, us-east-1-a-api, us-east-1-a-ws]
+    restart: unless-stopped
+    environment:
+      CONFIG_DSN: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@config-postgres:5432/${POSTGRES_DB}?sslmode=disable
+      VALKEY_ADDR: us-east-1-a-valkey:6379
+      AUTH_SECRET: ${AUTH_SECRET}
+      TOPOLOGY_CONFIG: /etc/chat/topology.yaml
+      # Control-plane paths (/organizations, /apps, /dashboard, /dodo) are
+      # proxied here; everything else routes to a cell by apikey.
+      CONTROL_URL: http://control:8080
+      ROUTER_ADDR: ":8080"
+      METRICS_ADDR: ":9100"
+    ports: ["8080:8080"] # the global endpoint (api.chat.io) in production
+
+  # ---- global control plane (org/dashboard/billing) -----------------------
+  control:
+    build: *app-build
+    command: ["control"]
+    depends_on: [config-postgres, us-east-1-a-postgres, us-east-1-a-valkey]
+    restart: unless-stopped
+    environment:
+      CONFIG_DSN: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@config-postgres:5432/${POSTGRES_DB}?sslmode=disable
+      # Per-cell DSNs, named by infra/topology.yaml's postgres.dsn_env. The
+      # control plane connects every cell for dashboard admin reads/writes.
+      SHARD_US_EAST_1_A_DSN: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@us-east-1-a-postgres:5432/${POSTGRES_DB}?sslmode=disable
+      VALKEY_ADDR: us-east-1-a-valkey:6379
+      AUTH_SECRET: ${AUTH_SECRET}
+      APP_SECRET_ENCRYPTION_KEY: ${APP_SECRET_ENCRYPTION_KEY}
+      TIERS_CONFIG: /etc/chat/tiers.yaml
+      TOPOLOGY_CONFIG: /etc/chat/topology.yaml
+      OG_SERVICE_URL: http://og-service:8080
+      AZURE_TRANSLATOR_KEY: ${AZURE_TRANSLATOR_KEY}
+      AZURE_TRANSLATOR_REGION: ${AZURE_TRANSLATOR_REGION}
+      HTTP_ADDR: ":8080"
+      METRICS_ADDR: ":9100"
+    ports: ["8082:8080"] # direct control-plane access; normally via the router
+
+  # ---- cell us-east-1-a: infrastructure -----------------------------------
+  us-east-1-a-postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     ports: ["5434:5432"]
-    volumes: ["shard-a-data:/var/lib/postgresql/data"]
+    volumes: ["us-east-1-a-data:/var/lib/postgresql/data"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  postgres-shard-b:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-    ports: ["5435:5432"]
-    volumes: ["shard-b-data:/var/lib/postgresql/data"]
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+  us-east-1-a-valkey:
+    image: valkey/valkey:7.2-alpine
+    ports: ["6379:6379"]
 
-  kafka:
+  us-east-1-a-kafka:
     image: apache/kafka:3.8.0
-    ports: ["9092:9092", "29092:29092"]
+    ports: ["29092:29092"]
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      # PLAINTEXT_HOST is a second, host-reachable listener alongside the
-      # container-to-container PLAINTEXT one — services inside the compose
-      # network (api/gateway/worker) keep using kafka:9092, while anything
-      # running directly on the host (go test, ad-hoc debugging) uses
-      # localhost:29092. Without it, a host process can dial 9092 for the
-      # initial connection but every subsequent produce/consume fails, since
-      # the client re-dials whatever address the broker advertises in its
-      # metadata response — "kafka", which only resolves inside Docker.
       KAFKA_LISTENERS: PLAINTEXT://:9092,PLAINTEXT_HOST://:29092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://us-east-1-a-kafka:9092,PLAINTEXT_HOST://localhost:29092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@us-east-1-a-kafka:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      # message.created is the only topic ever created, so this default
-      # applies to it alone: 6 partitions instead of Kafka's default of 1.
-      # A single partition caps consumer-group parallelism at one member no
-      # matter how many gateway instances exist — there'd be nothing left
-      # for a second instance to be assigned. The producer already
-      # partitions by channel_id (Balancer: &kafkago.Hash{} in
-      # internal/storage/kafka/kafka.go), so per-channel ordering holds
-      # regardless of partition count.
       KAFKA_NUM_PARTITIONS: "6"
       CLUSTER_ID: "Q2hhdFBsYXRmb3JtS1JhZnQx"
 
-  # Sentinel-managed primary/replica pair (INSTRUCTIONS.md's Redis-HA
-  # follow-up): api/gateway connect through Sentinel
-  # (VALKEY_SENTINEL_ADDRS), not directly to "valkey", so a primary failure
-  # promotes valkey-replica and every already-connected client's go-redis
-  # FailoverClient picks up the new primary on its own — no process
-  # restart. "valkey" remains a container/service name, not a guarantee of
-  # which physical role currently holds it; ask Sentinel, never assume.
-  valkey:
-    image: valkey/valkey:7.2-alpine
-    ports: ["6379:6379"]
+  # ---- cell us-east-1-a: roles (chat api / ws / worker) -------------------
+  us-east-1-a-api:
+    build: *app-build
+    command: ["api"]
+    depends_on: [config-postgres, us-east-1-a-postgres, us-east-1-a-valkey, us-east-1-a-kafka, og-service]
+    restart: unless-stopped
+    environment:
+      <<: *cell-env
+      HTTP_ADDR: ":8080"
+      METRICS_ADDR: ":9100"
+    ports: ["8081:8080"] # direct cell access; normally reached via the router
 
-  valkey-replica:
-    image: valkey/valkey:7.2-alpine
-    command: valkey-server --replicaof valkey 6379
-    depends_on: [valkey]
+  us-east-1-a-ws:
+    build: *app-build
+    command: ["ws"]
+    depends_on: [config-postgres, us-east-1-a-postgres, us-east-1-a-valkey, us-east-1-a-kafka]
+    restart: unless-stopped
+    environment:
+      <<: *cell-env
+      HTTP_ADDR: ":8080"
+      METRICS_ADDR: ":9100"
+      KAFKA_CONSUMER_GROUP: ws-us-east-1-a
+    ports: ["8091:8080"]
 
-  # Three Sentinels for majority quorum (quorum=2, set in
-  # deploy/sentinel/*.conf) — a single Sentinel would itself be a new
-  # single point of failure for failover detection, defeating the purpose.
-  # Each gets its own config file, not a shared one: Sentinel rewrites its
-  # config at runtime to persist state (known replicas, epoch), so three
-  # instances sharing one bind-mounted file would corrupt each other's
-  # writes.
-  valkey-sentinel-1:
-    image: valkey/valkey:7.2-alpine
-    depends_on: [valkey, valkey-replica]
-    command: valkey-sentinel /etc/valkey/sentinel.conf
-    volumes: ["../deploy/sentinel/sentinel-1.conf:/etc/valkey/sentinel.conf"]
-    ports: ["26379:26379"]
+  us-east-1-a-worker:
+    build: *app-build
+    command: ["worker"]
+    depends_on: [config-postgres, us-east-1-a-postgres, us-east-1-a-kafka]
+    restart: unless-stopped
+    environment:
+      <<: *cell-env
+      METRICS_ADDR: ":9100"
+    ports: ["9101:9100"]
 
-  valkey-sentinel-2:
-    image: valkey/valkey:7.2-alpine
-    depends_on: [valkey, valkey-replica]
-    command: valkey-sentinel /etc/valkey/sentinel.conf
-    volumes: ["../deploy/sentinel/sentinel-2.conf:/etc/valkey/sentinel.conf"]
-    ports: ["26380:26379"]
+  # Per-cell metrics collector: scrapes this cell's api/ws/worker every 5s,
+  # stamps region+shard, and remote-writes to the central Prometheus. One per
+  # cell — copy alongside each cell's role services.
+  us-east-1-a-alloy:
+    image: grafana/alloy:v1.5.1
+    depends_on: [us-east-1-a-api, us-east-1-a-ws, us-east-1-a-worker, prometheus]
+    restart: unless-stopped
+    environment:
+      REGION: us-east-1
+      SHARD: us-east-1-a
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
+    volumes:
+      - "../deploy/observability/alloy/cell.alloy:/etc/alloy/config.alloy:ro"
 
-  valkey-sentinel-3:
-    image: valkey/valkey:7.2-alpine
-    depends_on: [valkey, valkey-replica]
-    command: valkey-sentinel /etc/valkey/sentinel.conf
-    volumes: ["../deploy/sentinel/sentinel-3.conf:/etc/valkey/sentinel.conf"]
-    ports: ["26381:26379"]
-
-  # Standalone service (INSTRUCTIONS.md-style separation): given a URL,
-  # fetches its OpenGraph metadata and caches it in-memory for
-  # OG_CACHE_TTL (default 1h). No Postgres/Kafka/Valkey dependency — see
-  # internal/opengraph and cmd/ogservice. api-eu/us/asia call it over HTTP
-  # for the "url_enrichment" capability instead of scraping pages
-  # themselves; a single instance is enough since it holds no state any
-  # other service needs to agree on, but it's cheap to run more of behind
-  # a load balancer if fetch volume ever warrants it (each instance's
-  # cache is independent — a miss just costs one more outbound fetch).
+  # ---- shared standalone services -----------------------------------------
   og-service:
-    build:
-      <<: *app-build
-      args:
-        SERVICE: ogservice
+    build: *app-build
+    command: ["og"]
     restart: unless-stopped
     environment:
       HTTP_ADDR: ":8080"
       METRICS_ADDR: ":9100"
     ports: ["8095:8080"]
-
-  api-eu:
-    build:
-      <<: *app-build
-      args:
-        SERVICE: api
-    depends_on: [postgres-control, postgres-shard-a, postgres-shard-b, valkey, kafka, og-service]
-    restart: unless-stopped
-    environment:
-      <<: *common-env
-      REGION: eu
-      HTTP_ADDR: ":8080"
-      METRICS_ADDR: ":9100"
-    ports: ["8081:8080"]
-    volumes:
-      - "../deploy/shards.yaml:/etc/chat/shards.yaml:ro"
-      - "../deploy/tiers.yaml:/etc/chat/tiers.yaml:ro"
-
-  api-us:
-    build:
-      <<: *app-build
-      args:
-        SERVICE: api
-    depends_on: [postgres-control, postgres-shard-a, postgres-shard-b, valkey, kafka, og-service]
-    restart: unless-stopped
-    environment:
-      <<: *common-env
-      REGION: us
-      HTTP_ADDR: ":8080"
-      METRICS_ADDR: ":9100"
-    ports: ["8082:8080"]
-    volumes:
-      - "../deploy/shards.yaml:/etc/chat/shards.yaml:ro"
-      - "../deploy/tiers.yaml:/etc/chat/tiers.yaml:ro"
-
-  api-asia:
-    build:
-      <<: *app-build
-      args:
-        SERVICE: api
-    depends_on: [postgres-control, postgres-shard-a, postgres-shard-b, valkey, kafka, og-service]
-    restart: unless-stopped
-    environment:
-      <<: *common-env
-      REGION: asia
-      HTTP_ADDR: ":8080"
-      METRICS_ADDR: ":9100"
-    ports: ["8083:8080"]
-    volumes:
-      - "../deploy/shards.yaml:/etc/chat/shards.yaml:ro"
-      - "../deploy/tiers.yaml:/etc/chat/tiers.yaml:ro"
-
-  # All four gateway-* services below share one Kafka consumer group
-  # (KAFKA_CONSUMER_GROUP: gateway-fanout) instead of one group per region.
-  # Kafka splits message.created's 6 partitions across whichever instances
-  # are alive, so each message is handled by exactly one of them; that
-  # instance delivers to its own local connections directly and routes
-  # everyone else through Redis Pub/Sub to whichever instance actually
-  # holds them (internal/realtime/fanout.go, pubsub.go). gateway-eu-2 is a
-  # second instance in the eu region specifically to exercise that
-  # cross-instance path — proof that adding capacity to a region no longer
-  # requires a code change, just another instance in the same group.
-  gateway-eu:
-    build:
-      <<: *app-build
-      args:
-        SERVICE: gateway
-    depends_on: [valkey, kafka]
-    restart: unless-stopped
-    environment:
-      <<: *common-env
-      REGION: eu
-      HTTP_ADDR: ":8080"
-      METRICS_ADDR: ":9100"
-      KAFKA_CONSUMER_GROUP: gateway-fanout
-    ports: ["8091:8080"]
-    volumes: ["../deploy/shards.yaml:/etc/chat/shards.yaml:ro"]
-
-  gateway-eu-2:
-    build:
-      <<: *app-build
-      args:
-        SERVICE: gateway
-    depends_on: [valkey, kafka]
-    restart: unless-stopped
-    environment:
-      <<: *common-env
-      REGION: eu
-      HTTP_ADDR: ":8080"
-      METRICS_ADDR: ":9100"
-      KAFKA_CONSUMER_GROUP: gateway-fanout
-    ports: ["8094:8080"]
-    volumes: ["../deploy/shards.yaml:/etc/chat/shards.yaml:ro"]
-
-  gateway-us:
-    build:
-      <<: *app-build
-      args:
-        SERVICE: gateway
-    depends_on: [valkey, kafka]
-    restart: unless-stopped
-    environment:
-      <<: *common-env
-      REGION: us
-      HTTP_ADDR: ":8080"
-      METRICS_ADDR: ":9100"
-      KAFKA_CONSUMER_GROUP: gateway-fanout
-    ports: ["8092:8080"]
-    volumes: ["../deploy/shards.yaml:/etc/chat/shards.yaml:ro"]
-
-  gateway-asia:
-    build:
-      <<: *app-build
-      args:
-        SERVICE: gateway
-    depends_on: [valkey, kafka]
-    restart: unless-stopped
-    environment:
-      <<: *common-env
-      REGION: asia
-      HTTP_ADDR: ":8080"
-      METRICS_ADDR: ":9100"
-      KAFKA_CONSUMER_GROUP: gateway-fanout
-    ports: ["8093:8080"]
-    volumes: ["../deploy/shards.yaml:/etc/chat/shards.yaml:ro"]
-
-  worker-outbox-a:
-    build:
-      <<: *app-build
-      args:
-        SERVICE: worker
-    # postgres-control: the retention sweep (cmd/worker/retention.go) reads
-    # organizations/apps/channels to resolve each channel's tier — the one
-    # thing this worker touches outside its own shard.
-    depends_on: [postgres-control, postgres-shard-a, kafka]
-    restart: unless-stopped
-    environment:
-      <<: *common-env
-      SHARD_ID: shard-a
-      SHARD_DSN: ${SHARD_A_DSN}
-      METRICS_ADDR: ":9100"
-    ports: ["9101:9100"]
-    volumes:
-      - "../deploy/shards.yaml:/etc/chat/shards.yaml:ro"
-      - "../deploy/tiers.yaml:/etc/chat/tiers.yaml:ro"
-
-  worker-outbox-b:
-    build:
-      <<: *app-build
-      args:
-        SERVICE: worker
-    depends_on: [postgres-control, postgres-shard-b, kafka]
-    restart: unless-stopped
-    environment:
-      <<: *common-env
-      SHARD_ID: shard-b
-      SHARD_DSN: ${SHARD_B_DSN}
-      METRICS_ADDR: ":9100"
-    ports: ["9102:9100"]
-    volumes:
-      - "../deploy/shards.yaml:/etc/chat/shards.yaml:ro"
-      - "../deploy/tiers.yaml:/etc/chat/tiers.yaml:ro"
 
   prometheus:
     image: prom/prometheus:v2.55.1
@@ -343,16 +200,14 @@ services:
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.retention.time=7d"
+      # Cells push their metrics here (deploy/observability/alloy/cell.alloy).
+      - "--web.enable-remote-write-receiver"
 
   grafana:
     image: grafana/grafana:11.3.1
     depends_on: [prometheus]
     ports: ["3003:3000"]
     environment:
-      # Dev-only convenience — anonymous viewer access, no login screen to
-      # get past just to look at a dashboard on a local stack. Same
-      # dev-grade posture the rest of this platform is explicit about
-      # (docs/platform/security.md); never do this for a real deployment.
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
@@ -363,8 +218,7 @@ services:
       - "grafana-data:/var/lib/grafana"
 
 volumes:
-  control-data:
-  shard-a-data:
-  shard-b-data:
+  config-data:
+  us-east-1-a-data:
   prometheus-data:
   grafana-data:

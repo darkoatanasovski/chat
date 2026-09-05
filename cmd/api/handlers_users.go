@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"net/http"
@@ -13,8 +13,6 @@ const tokenTTL = 24 * time.Hour
 // redo transparently — see the SDK's server module), so there's no reason
 // to let a stolen app token stay valid as long as an end-user's.
 const appTokenTTL = 1 * time.Hour
-
-var validRegions = map[string]bool{"eu": true, "us": true, "asia": true}
 
 type appTokenResponse struct {
 	Token     string `json:"token"`
@@ -73,17 +71,16 @@ func (a *App) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.DisplayName = strings.TrimSpace(req.DisplayName)
-	req.Region = strings.ToLower(strings.TrimSpace(req.Region))
 	if req.DisplayName == "" || len(req.DisplayName) > 128 {
 		writeError(w, http.StatusBadRequest, "display_name is required (max 128 chars)")
 		return
 	}
-	if !validRegions[req.Region] {
-		writeError(w, http.StatusBadRequest, "region must be one of eu, us, asia")
-		return
-	}
+	// Region isn't client-chosen: an end-user's region is its app's cell
+	// placement. This instance only ever serves apps placed in its own
+	// region (the router routed the request here), so cfg.Region IS the
+	// app's region — no lookup needed.
 
-	u, err := a.usersSvc.CreateUser(r.Context(), req.DisplayName, req.Region, appIdentity.AppID)
+	u, err := a.usersSvc.CreateUser(r.Context(), req.DisplayName, appIdentity.AppID)
 	if err != nil {
 		a.log.Error("create user", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to create user")
@@ -97,7 +94,7 @@ func (a *App) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := a.signer.IssueUserToken(u.UserID.String(), u.HomeRegion, u.AppID, tokenTTL)
+	token, err := a.signer.IssueUserToken(u.UserID.String(), a.cfg.Region, u.AppID, tokenTTL)
 	if err != nil {
 		a.log.Error("issue token", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to issue token")
@@ -107,7 +104,7 @@ func (a *App) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, createUserResponse{
 		UserID:      u.UserID.String(),
 		DisplayName: u.DisplayName,
-		Region:      u.HomeRegion,
+		Region:      a.cfg.Region,
 		Tier:        tier,
 		Token:       token,
 	})

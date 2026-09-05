@@ -5,7 +5,7 @@
 // dashboard-driven poll *creation*: polls are created by an app's own
 // end-users (POST /channels/{id}/polls), same division of labor as
 // messages themselves.
-package main
+package api
 
 import (
 	"net/http"
@@ -49,36 +49,27 @@ func (a *App) dashboardPollsFor(r *http.Request, appIDs []int64, appNameByID map
 		return nil, err
 	}
 
-	channelsByShard := map[string][]uuid.UUID{}
+	var channelIDs []uuid.UUID
 	appByChannel := map[uuid.UUID]int64{}
 	nameByChannel := map[uuid.UUID]string{}
 	for _, c := range routeInfo {
-		shardID, err := a.router.PhysicalShardID(c.VirtualShard)
-		if err != nil {
-			return nil, err
-		}
-		channelsByShard[shardID] = append(channelsByShard[shardID], c.ChannelID)
+		channelIDs = append(channelIDs, c.ChannelID)
 		appByChannel[c.ChannelID] = c.AppID
 		nameByChannel[c.ChannelID] = c.Name
 	}
 
+	// All these channels live in this cell's database.
 	var all []polls.Poll
-	for shardID, channelIDs := range channelsByShard {
-		pool, err := a.shardPools.Get(shardID)
-		if err != nil {
-			return nil, err
-		}
-		list, err := a.pollsRepo.ListByChannels(r.Context(), pool, channelIDs, dashboardPollsLimit)
+	if len(channelIDs) > 0 {
+		list, err := a.pollsRepo.ListByChannels(r.Context(), a.cellPool, channelIDs, dashboardPollsLimit)
 		if err != nil {
 			return nil, err
 		}
 		all = append(all, list...)
 	}
 
-	// Merging one "top N per shard" list per physical shard doesn't leave
-	// the combined result newest-first overall — sort the raw polls (by
-	// their actual CreatedAt, not the formatted string) before truncating
-	// to the same cap each shard already applied individually.
+	// ListByChannels already applies the cap; sort newest-first before
+	// truncating to the same cap for a stable overall ordering.
 	sort.Slice(all, func(i, j int) bool { return all[i].CreatedAt.After(all[j].CreatedAt) })
 	if len(all) > dashboardPollsLimit {
 		all = all[:dashboardPollsLimit]

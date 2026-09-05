@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"context"
@@ -36,7 +36,7 @@ func signUpDashboardOrg(t *testing.T, app *App, orgName string) (token string, o
 // unrelated to what it's actually testing.
 func bumpOrgTierForTest(t *testing.T, app *App, orgID int64, tier string) {
 	t.Helper()
-	if _, err := app.controlPool.Exec(context.Background(), `UPDATE organizations SET tier = $1 WHERE org_id = $2`, tier, orgID); err != nil {
+	if _, err := app.configPool.Exec(context.Background(), `UPDATE organizations SET tier = $1 WHERE org_id = $2`, tier, orgID); err != nil {
 		t.Fatalf("bump org tier: %v", err)
 	}
 }

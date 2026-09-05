@@ -1,160 +1,106 @@
-# Railway dev deployment
+# Railway deployment
 
-A single-region deployment of this platform on [Railway](https://railway.app),
-meant for fast iteration during development — not a replacement for the
-multi-region, Sentinel-backed, horizontally-scaled architecture the rest of
-`deploy/` describes. See the "why not just run docker-compose everywhere"
-discussion this setup came out of: Railway earns its place here for
-git-push deploys and managed Postgres/Redis without needing to run
-`docker compose` on a box somewhere, at the cost of the multi-region and HA
-properties this platform is otherwise built for.
+A cell-based deployment of the platform on [Railway](https://railway.app),
+matching the model in
+[docs/adr/0006-cell-based-tenant-routing.md](../adr/0006-cell-based-tenant-routing.md):
+a global **config** database, one or more self-contained **cells**, and a
+**router** in front that sends each request to the cell its app is pinned to.
 
-## Topology
+Everything is one image — `deploy/docker/Dockerfile` builds the single `chat`
+binary — and each Railway service just runs a different **start command**
+(`api`, `ws`, `worker`, `router`). There are no per-service Dockerfiles
+anymore.
 
-One region's worth of services instead of three, and one Postgres instance
-instead of three:
+## Topology (one region, one cell — the cheap starting point)
 
-| Railway service | What it runs | Deployed from |
+| Railway service | Start command | Notes |
 |---|---|---|
-| `api` | `cmd/api` | `deploy/railway/api.Dockerfile` |
-| `gateway` | `cmd/gateway` | `deploy/railway/gateway.Dockerfile` |
-| `worker` | `cmd/worker` | `deploy/railway/worker.Dockerfile` |
-| `postgres` | Postgres | Railway's built-in Postgres plugin |
-| `redis` | Valkey/Redis | Railway's built-in Redis plugin, or the `valkey/valkey:7.2-alpine` public image |
-| `kafka` | Kafka (KRaft, single broker) | the `apache/kafka:3.8.0` public image — same one `deploy/docker-compose.yml` already uses |
+| `router` | `router` | Public. The global endpoint (`api.chat.io`). Set `CONTROL_URL` to the control service. |
+| `control` | `control` | Global org/dashboard/billing plane. Reads config DB + every cell DB. |
+| `config-postgres` | — | Railway Postgres plugin. The global config DB. |
+| `cell-a-postgres` | — | Railway Postgres plugin. This cell's own DB. |
+| `cell-a-kafka` | — | `apache/kafka:3.8.0` image. This cell's own broker. |
+| `cell-a-valkey` | — | Railway Redis plugin / `valkey/valkey:7.2-alpine`. This cell's cache. |
+| `cell-a-api` | `api` | REST for the cell (run 2+ for availability). |
+| `cell-a-ws` | `ws` | WebSocket edge for the cell (run 2+). |
+| `cell-a-worker` | `worker` | Outbox publisher + retention/reminders (run 2+). |
 
-`postgres` hosts three logical databases — `control`, `shard_a`, `shard_b`
-— instead of three separate Postgres instances. The app doesn't care: it
-just needs three distinct connection strings (`CONTROL_DSN`, `SHARD_A_DSN`,
-`SHARD_B_DSN`), and the migration script (`deploy/railway/migrate.sh`)
-creates all three databases on first run if they don't exist yet.
+Adding a second cell = a second Postgres/Kafka/Valkey trio plus its own
+`api`/`ws`/`worker` services, and a new entry in `infra/topology.yaml`. The
+router and config DB stay single and global.
 
-No Sentinel, no Redis replica, no multiple Kafka partition-consumer
-instances: this environment has one of everything. That's the deliberate
-trade for "cheap and fast to stand up," not an oversight — round 2 and
-round 4 of the load-test/fanout work (see the published report) are what
-you'd re-enable by pointing this same app at the full `deploy/docker-compose.yml`
-topology instead.
+## Provisioning
 
-## One-time setup
+1. **Create the databases**: two Postgres services (`config-postgres`,
+   `cell-a-postgres`) and one Redis/Valkey (`cell-a-valkey`). Deploy Kafka
+   (`cell-a-kafka`) from `apache/kafka:3.8.0` with the KRaft env from
+   `deploy/docker-compose.yml`'s `us-east-1-a-kafka` (advertise it on its
+   Railway private hostname, e.g. `cell-a-kafka.railway.internal:9092`).
 
-1. **Create a Railway project** and, inside it, add:
-   - A **Postgres** service (Railway's built-in plugin). Note its connection
-     string — you'll need it for `RAILWAY_POSTGRES_URL` below.
-   - A **Redis** service (built-in plugin, or deploy the `valkey/valkey:7.2-alpine`
-     image directly — either works, this app only needs standard Redis
-     commands).
-   - A **Kafka** service deployed from the public image `apache/kafka:3.8.0`.
-     Name it `kafka` (Railway's private networking exposes it as
-     `kafka.railway.internal`, which the env vars below assume). Set its
-     environment to match `deploy/docker-compose.yml`'s `kafka` service,
-     minus the host-facing `PLAINTEXT_HOST` listener (nothing outside the
-     Railway project needs to reach it directly):
-     ```
-     KAFKA_NODE_ID=1
-     KAFKA_PROCESS_ROLES=broker,controller
-     KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
-     KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka.railway.internal:9092
-     KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
-     KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-     KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka.railway.internal:9093
-     KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
-     KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
-     KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
-     KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
-     KAFKA_NUM_PARTITIONS=6
-     CLUSTER_ID=Q2hhdFBsYXRmb3JtS1JhZnQx
-     ```
+2. **Create the app services** (`router`, `cell-a-api`, `cell-a-ws`,
+   `cell-a-worker`), each deployed from this repo with **Dockerfile path**
+   `deploy/docker/Dockerfile` and a **Custom Start Command** of its role
+   (`router` / `api` / `ws` / `worker`). `infra/topology.yaml` and
+   `deploy/tiers.yaml` are baked into the image.
 
-2. **Create the three app services** (`api`, `gateway`, `worker`), each
-   deployed from this GitHub repo with its "Config File Path" / Dockerfile
-   path (whichever your Railway UI version calls it) set to its file under
-   `deploy/railway/`:
-   - `api` → `deploy/railway/api.Dockerfile`
-   - `gateway` → `deploy/railway/gateway.Dockerfile`
-   - `worker` → `deploy/railway/worker.Dockerfile`
+3. **Environment variables** (use Railway's `${{Service.VAR}}` references
+   instead of literals where possible):
 
-   Set each service's environment variables from the table below — Railway
-   lets you reference another service's connection info directly (e.g.
-   `${{Postgres.DATABASE_URL}}`) instead of copy-pasting values; use that
-   wherever available instead of the literal values shown here.
-
-   **api**
+   **router**
    ```
-   REGION=eu
+   CONFIG_DSN=${{config-postgres.DATABASE_URL}}
+   VALKEY_ADDR=<cell-a-valkey private host>:<port>
+   AUTH_SECRET=<openssl rand -hex 32>
+   TOPOLOGY_CONFIG=/etc/chat/topology.yaml
+   CONTROL_URL=http://control.railway.internal:8080
+   ROUTER_ADDR=:8080
+   METRICS_ADDR=:9100
+   ```
+
+   **control**
+   ```
+   CONFIG_DSN=${{config-postgres.DATABASE_URL}}
+   SHARD_US_EAST_1_A_DSN=${{cell-a-postgres.DATABASE_URL}}   # one per cell, named by topology.yaml's dsn_env
+   VALKEY_ADDR=<cell-a-valkey private host>:<port>
+   AUTH_SECRET=<same value as router's>
+   APP_SECRET_ENCRYPTION_KEY=<openssl rand -base64 32>
+   TIERS_CONFIG=/etc/chat/tiers.yaml
+   TOPOLOGY_CONFIG=/etc/chat/topology.yaml
    HTTP_ADDR=:8080
    METRICS_ADDR=:9100
-   CONTROL_DSN=<postgres DSN>/control
-   SHARD_A_DSN=<postgres DSN>/shard_a
-   SHARD_B_DSN=<postgres DSN>/shard_b
-   VALKEY_ADDR=<redis private host>:<port>
-   KAFKA_BROKERS=kafka.railway.internal:9092
-   AUTH_SECRET=<generate: openssl rand -hex 32>
-   APP_SECRET_ENCRYPTION_KEY=<generate: openssl rand -base64 32>
-   SHARDS_CONFIG=/etc/chat/shards.yaml
-   TIERS_CONFIG=/etc/chat/tiers.yaml
-   PEER_API_EU_URL=https://<api's public Railway domain>
-   CORS_ALLOWED_ORIGINS=<your frontend's origin>
    ```
-   `PEER_API_US_URL`/`PEER_API_ASIA_URL` can stay unset — this deployment
-   only has one region, so there's nothing to forward cross-region writes
-   to.
 
-   **gateway**
+   **cell-a-api / cell-a-ws / cell-a-worker** (shared)
    ```
-   REGION=eu
+   REGION=us-east-1
+   SHARD_ID=us-east-1-a
+   CONFIG_DSN=${{config-postgres.DATABASE_URL}}
+   CELL_DSN=${{cell-a-postgres.DATABASE_URL}}
+   VALKEY_ADDR=<cell-a-valkey private host>:<port>
+   KAFKA_BROKERS=cell-a-kafka.railway.internal:9092
+   AUTH_SECRET=<same value as router's>
+   APP_SECRET_ENCRYPTION_KEY=<openssl rand -base64 32>   # api only, but harmless everywhere
+   TIERS_CONFIG=/etc/chat/tiers.yaml
+   TOPOLOGY_CONFIG=/etc/chat/topology.yaml
    HTTP_ADDR=:8080
    METRICS_ADDR=:9100
-   CONTROL_DSN=<postgres DSN>/control
-   VALKEY_ADDR=<redis private host>:<port>
-   KAFKA_BROKERS=kafka.railway.internal:9092
-   KAFKA_CONSUMER_GROUP=gateway-fanout
-   AUTH_SECRET=<same value as api's>
-   SHARDS_CONFIG=/etc/chat/shards.yaml
-   TIERS_CONFIG=/etc/chat/tiers.yaml
    ```
-   `FANOUT_SHARDS` can stay unset (defaults to 16) unless you have a
-   specific reason to change it.
+   `cell-a-ws` additionally: `KAFKA_CONSUMER_GROUP=ws-us-east-1-a`.
 
-   **worker** — one instance per shard, so add it twice (e.g. `worker-a`
-   and `worker-b`), or run one instance and accept that only one shard's
-   outbox gets published (fine for early dev, not for anything real):
-   ```
-   SHARD_ID=shard-a
-   SHARD_DSN=<postgres DSN>/shard_a
-   KAFKA_BROKERS=kafka.railway.internal:9092
-   METRICS_ADDR=:9100
-   ```
-   (swap `shard-a`/`shard_a` for `shard-b`/`shard_b` on the second instance)
+4. **Point topology at the cell**: `infra/topology.yaml`'s `us-east-1-a`
+   endpoints must resolve to the cell's services on Railway's private network
+   (e.g. `http://cell-a-api.railway.internal:8080`). Edit and redeploy so the
+   baked copy matches your service names.
 
-3. **Generate a Railway API token** scoped to this project (Railway's
-   dashboard: project settings → Tokens) and add it to this repo's GitHub
-   Actions secrets as `RAILWAY_TOKEN`.
-
-4. **Add `RAILWAY_POSTGRES_URL`** as a GitHub Actions secret too — the
-   Postgres service's *public* connection string (something like
-   `postgres://user:pass@containers-us-west-x.railway.app:port/railway`).
-   The migration job runs from a GitHub-hosted runner, outside Railway's
-   private network, so it needs the public endpoint; the app services
-   themselves should still use the private one (`CONTROL_DSN` etc. above)
-   since it's faster and doesn't leave Railway's network.
-
-## Deploying
-
-Push to `master` (or merge a PR into it) and
-`.github/workflows/deploy-railway.yml` takes it from there: build + vet as
-a gate, then `deploy/railway/migrate.sh` against the real database, then
-`railway up --service <name>` for `api`, `gateway`, and `worker` in turn.
-
-To deploy by hand instead (e.g. before the GitHub Actions secrets are set
-up): install the Railway CLI (`npm i -g @railway/cli`), `railway login`,
-`railway link` to this project, then run `railway up --service <name>` for
-each service from the repo root, and `DATABASE_URL=<public postgres URL>
-bash deploy/railway/migrate.sh` for migrations.
+5. **Migrations**: add GitHub Actions secrets `CONFIG_DATABASE_URL` (the
+   config DB's *public* DSN) and `CELL_DATABASE_URLS` (comma-separated cell
+   DB public DSNs), then run `deploy/railway/migrate.sh` from CI. App services
+   use the private DSNs above; only the migration job, running outside
+   Railway's network, needs the public ones.
 
 ## What's deliberately not here
 
-No Sentinel, no Redis replica, no multi-partition-consumer fan-out
-exercise, no cross-region routing, no autoscaling policy. This is a dev
-environment, not a load-bearing one — see the main report artifact for
-what changes (and why) when this app runs its full topology instead.
+Multi-cell, multi-region, and autoscaling are all just "more of the same"
+(another cell trio + topology entry; more replicas of a role). This single
+cell exists to stand the model up cheaply and prove the router → cell path
+end to end, exactly as the local `deploy/docker-compose.yml` does.

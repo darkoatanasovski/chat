@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"bytes"
@@ -70,7 +70,7 @@ func (a *App) handleTranslateMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
+	_, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
 	if !ok {
 		return
 	}
@@ -81,11 +81,6 @@ func (a *App) handleTranslateMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !a.checkTranslationRateLimit(w, r, identity) {
-		return
-	}
-
-	if route.HomeRegion != a.cfg.Region {
-		a.forwardToHomeRegion(w, r, route.HomeRegion, body)
 		return
 	}
 

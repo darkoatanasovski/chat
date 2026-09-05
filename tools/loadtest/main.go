@@ -61,7 +61,10 @@ func main() {
 	fmt.Printf("== chat platform load test ==\napi=%s ws=%v region=%s tier=%s members=%d connections/member=%d rate=%.1f/s duration=%s reconnect_storm=%v\n\n",
 		*apiURL, gatewayURLs, *region, *tier, *members, *connectionsPerMember, *rate, *duration, *reconnectStorm)
 
-	sender, err := api.createUser("loadtest-sender-"+uuid.NewString()[:8], *region, appKey, appSecret)
+	appToken, err := api.exchangeAppToken(appKey, appSecret)
+	must(err, "exchange app token")
+
+	sender, err := api.createUser("loadtest-sender-"+uuid.NewString()[:8], *region, appToken)
 	must(err, "create sender")
 
 	channel, err := api.createChannel(sender.Token, "loadtest-channel")
@@ -70,7 +73,7 @@ func main() {
 
 	memberTokens := []string{sender.Token}
 	for i := 1; i < *members; i++ {
-		u, err := api.createUser(fmt.Sprintf("loadtest-member-%d-%s", i, uuid.NewString()[:8]), *region, appKey, appSecret)
+		u, err := api.createUser(fmt.Sprintf("loadtest-member-%d-%s", i, uuid.NewString()[:8]), *region, appToken)
 		must(err, "create member")
 		if err := api.addMember(sender.Token, channel.ChannelID, u.UserID); err != nil {
 			log.Fatalf("add member %d: %v (tip: raise the account tier or lower --members; FREE defaults to max_channel_members=3)", i, err)

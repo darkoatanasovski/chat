@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"bytes"
@@ -213,11 +213,6 @@ func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	if !decision.Allowed {
 		a.metrics.RateLimitRejectionsTotal.WithLabelValues(quota.CapabilityMessageSend).Inc()
 		writeError(w, http.StatusTooManyRequests, decision.Reason)
-		return
-	}
-
-	if route.HomeRegion != a.cfg.Region {
-		a.forwardToHomeRegion(w, r, route.HomeRegion, body)
 		return
 	}
 
@@ -501,7 +496,7 @@ func (a *App) handleEditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
+	_, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
 	if !ok {
 		return
 	}
@@ -518,11 +513,6 @@ func (a *App) handleEditMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !a.checkMessageEditRateLimit(w, r, identity) {
-		return
-	}
-
-	if route.HomeRegion != a.cfg.Region {
-		a.forwardToHomeRegion(w, r, route.HomeRegion, body)
 		return
 	}
 

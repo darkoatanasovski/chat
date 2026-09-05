@@ -20,6 +20,25 @@ type Config struct {
 	ShardADSN  string
 	ShardBDSN  string
 
+	// Cell-based routing (docs/adr/0006-cell-based-tenant-routing.md).
+	// ConfigDSN is the global config database (migrations/config); every
+	// role and the router read app placement/credentials/settings from it
+	// via internal/appconfig. CellDSN is THIS cell's own Postgres
+	// (migrations/cell) holding all tenant data for the apps pinned here —
+	// it replaces the ShardADSN/ShardBDSN pair and the any-api-reaches-any-
+	// shard model. TopologyPath points at infra/topology.yaml (regions ->
+	// cells -> endpoints), read by the router.
+	ConfigDSN    string
+	CellDSN      string
+	TopologyPath string
+	// RouterAddr is the router role's public listen address.
+	RouterAddr string
+	// ControlURL is where the router forwards control-plane paths
+	// (/organizations, /apps, /dashboard, /dodo) — the global control-plane
+	// service (chat control). Empty means "no control plane wired": the
+	// router then 404s those paths instead of proxying.
+	ControlURL string
+
 	ValkeyAddr   string
 	KafkaBrokers []string
 
@@ -33,6 +52,10 @@ type Config struct {
 	ValkeyMasterName    string
 
 	AuthSecret string
+
+	// TurnstileSecret enables Cloudflare Turnstile verification on dashboard
+	// signup (control plane). Empty = disabled (dev/tests/unprotected).
+	TurnstileSecret string
 
 	// AppSecretEncryptionKey decrypts/encrypts app_credentials.secret_encrypted
 	// (internal/platform/secretbox) so a dashboard user can reveal a
@@ -120,9 +143,15 @@ func Load() (Config, error) {
 		ControlDSN:         os.Getenv("CONTROL_DSN"),
 		ShardADSN:          os.Getenv("SHARD_A_DSN"),
 		ShardBDSN:          os.Getenv("SHARD_B_DSN"),
+		ConfigDSN:          os.Getenv("CONFIG_DSN"),
+		CellDSN:            os.Getenv("CELL_DSN"),
+		TopologyPath:       getenvDefault("TOPOLOGY_CONFIG", "/etc/chat/topology.yaml"),
+		RouterAddr:         getenvDefault("ROUTER_ADDR", ":8080"),
+		ControlURL:         os.Getenv("CONTROL_URL"),
 		ValkeyAddr:         os.Getenv("VALKEY_ADDR"),
 		ValkeyMasterName:   getenvDefault("VALKEY_MASTER_NAME", "mymaster"),
 		AuthSecret:         os.Getenv("AUTH_SECRET"),
+		TurnstileSecret:    os.Getenv("TURNSTILE_SECRET"),
 		ShardsConfigPath:   os.Getenv("SHARDS_CONFIG"),
 		TiersConfigPath:    getenvDefault("TIERS_CONFIG", "/etc/chat/tiers.yaml"),
 		KafkaConsumerGroup: os.Getenv("KAFKA_CONSUMER_GROUP"),

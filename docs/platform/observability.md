@@ -1,17 +1,35 @@
 # Observability
 
-Implements INSTRUCTIONS.md §37. Every service (`api`, `gateway`, `worker`)
-exposes metrics, structured logs, and a health check; a lightweight tracing
-seam is wired through every request even though no exporter is plugged in
-yet.
+Implements INSTRUCTIONS.md §37. Every service (`api`, `ws`, `worker`,
+`router`, `control`) exposes metrics, structured logs, and a health check; a
+lightweight tracing seam is wired through every request even though no
+exporter is plugged in yet.
+
+## Collection: cells push, one Grafana for the fleet
+
+In the cell model (docs/adr/0006-cell-based-tenant-routing.md) each cell is a
+self-contained failure domain, possibly in another region — so metrics are
+**pushed**, not centrally scraped. Every cell runs a **Grafana Alloy**
+collector (`deploy/observability/alloy/cell.alloy`) that scrapes its own
+api/ws/worker `/metrics` every 5s, stamps each series with the cell's `region`
+and `shard` labels, and **remote-writes** to a single central Prometheus
+(`--web.enable-remote-write-receiver`). The central Prometheus directly
+scrapes only the global services co-located with it (`router`, `control`,
+`og-service`). **One Grafana** queries the central store and serves every
+region and shard, sliceable by the `region`/`shard` labels the collectors
+stamp. Adding a cell means running one more collector — no central config
+change. (Alloy is interchangeable with a Vector or OpenTelemetry Collector
+using a prometheus-scrape source + remote-write sink.) A production fleet
+points remote-write at Grafana Mimir/Thanos/Cloud instead of one Prometheus;
+only the URL changes.
 
 ## Metrics
 
 Prometheus, served on a separate port from application traffic
 (`METRICS_ADDR`, default `:9100`) so `/metrics` scraping is never affected by
 application load or vice versa. `internal/platform/metrics.New(namespace)`
-registers a namespaced set per service (`chat_api`, `chat_gateway`,
-`chat_worker`).
+registers a namespaced set per service (`chat_api`, `chat_ws`,
+`chat_worker`, `chat_router`, `chat_control`).
 
 | Metric | Type | Where recorded |
 |---|---|---|

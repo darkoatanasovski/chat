@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"bytes"
@@ -29,7 +29,7 @@ func testApp(t *testing.T) *App {
 func do(t *testing.T, app *App, req *http.Request, out any) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	app.routes().ServeHTTP(rec, req)
+	app.testRoutes().ServeHTTP(rec, req)
 	if out != nil && rec.Body.Len() > 0 {
 		if err := json.Unmarshal(rec.Body.Bytes(), out); err != nil {
 			t.Fatalf("decode response body %q: %v", rec.Body.String(), err)
@@ -341,8 +341,8 @@ func TestHandleCreateChannel_ValidAndQuotaEnforced(t *testing.T) {
 	_, token := createTestUser(t, app, "channel-owner")
 
 	first := createTestChannel(t, app, token, "general")
-	if first.HomeRegion != "eu" {
-		t.Fatalf("expected home_region eu, got %q", first.HomeRegion)
+	if first.Region != "eu" {
+		t.Fatalf("expected region eu, got %q", first.Region)
 	}
 
 	// FREE tier's max_channels is 1 (deploy/tiers.yaml) — a second channel

@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"encoding/json"
@@ -15,12 +15,20 @@ import (
 
 type createAppRequest struct {
 	Name string `json:"name"`
+	// Region optionally pins the app to a specific region (data residency).
+	// Empty means "let the platform choose" (the first region in the
+	// topology). The app lives in that region's cell for its whole life.
+	Region string `json:"region,omitempty"`
 }
 
 type appResponse struct {
 	AppID     int64  `json:"app_id"`
 	Name      string `json:"name"`
 	CreatedAt string `json:"created_at"`
+	// Region/Shard: the app's cell placement (immutable). All of its data
+	// lives in this cell — see ADR 0006.
+	Region string `json:"region"`
+	Shard  string `json:"shard"`
 	// MaxThreadDepth: 0 means no cap. See apps.App.MaxThreadDepth.
 	MaxThreadDepth int `json:"max_thread_depth"`
 	// MessageEditEnabled: whether this app's end-users may edit their own
@@ -45,6 +53,8 @@ func appResponseFrom(app apps.App) appResponse {
 		AppID:               app.AppID,
 		Name:                app.Name,
 		CreatedAt:           app.CreatedAt.Format(rfc3339Milli),
+		Region:              app.Region,
+		Shard:               app.Shard,
 		MaxThreadDepth:      app.MaxThreadDepth,
 		MessageEditEnabled:  app.MessageEditEnabled,
 		ChannelCapabilities: app.ChannelCapabilities,
@@ -123,7 +133,16 @@ func (a *App) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newApp, err := a.appsRepo.Create(r.Context(), orgIdentity.OrgID, req.Name)
+	// Placement: pin the new app to a cell for its whole life. If the caller
+	// named a region we place it there (data residency); otherwise the
+	// platform picks (first region in the topology). A fuller policy
+	// (least-loaded cell) is future work — see ADR 0006.
+	region, shard, ok := a.topo.PlaceInRegion(strings.ToLower(strings.TrimSpace(req.Region)))
+	if !ok {
+		writeError(w, http.StatusBadRequest, "unknown region (no cell available to place the app)")
+		return
+	}
+	newApp, err := a.appsRepo.Create(r.Context(), orgIdentity.OrgID, req.Name, region, shard)
 	if err != nil {
 		a.log.Error("create app", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to create app")

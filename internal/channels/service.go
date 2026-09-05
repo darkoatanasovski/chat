@@ -6,42 +6,36 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
-	"github.com/darkoatanasovski/chat/internal/routing"
 )
 
-// Service ties channel creation to virtual-shard assignment. Quota checks
-// (max_channels) are the caller's responsibility (cmd/api), matching
-// INSTRUCTIONS.md §23's Allow(subject, capability) being called at the
-// operation boundary rather than buried in domain services.
+// Service owns channel creation. In the cell model a channel needs no
+// routing metadata of its own — its region and shard are its app's placement
+// (config DB), and it lives entirely in this cell's database — so creation is
+// just identity assignment plus the tenant-isolation stamp (appID). Quota
+// checks (max_channels) remain the caller's responsibility (cmd/api).
 type Service struct {
-	repo   *Repo
-	router *routing.Router
+	repo *Repo
 }
 
-func NewService(repo *Repo, router *routing.Router) *Service {
-	return &Service{repo: repo, router: router}
+func NewService(repo *Repo) *Service {
+	return &Service{repo: repo}
 }
 
-// CreateChannel assigns home_region from the creator's region (V1's simple
-// placement policy: a channel is born in its creator's region). virtual_shard
-// is a pure function of the new channel_id. appID stamps the tenant-isolation
-// boundary the channel belongs to for its whole lifetime.
-func (s *Service) CreateChannel(ctx context.Context, name string, creator uuid.UUID, creatorRegion string, appID int64) (Channel, error) {
+// CreateChannel mints a channel within appID (the tenant-isolation boundary
+// it belongs to for its whole lifetime). No home_region / virtual_shard: the
+// app is already pinned to one cell, and every channel it owns lives there.
+func (s *Service) CreateChannel(ctx context.Context, name string, creator uuid.UUID, appID int64) (Channel, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return Channel{}, fmt.Errorf("channels: generate id: %w", err)
 	}
-	virtualShard := s.router.VirtualShard(id.String())
 
 	c := Channel{
-		ChannelID:    id,
-		Name:         name,
-		HomeRegion:   creatorRegion,
-		VirtualShard: virtualShard,
-		AppID:        appID,
-		CreatedBy:    creator,
-		CreatedAt:    time.Now().UTC(),
+		ChannelID: id,
+		Name:      name,
+		AppID:     appID,
+		CreatedBy: creator,
+		CreatedAt: time.Now().UTC(),
 	}
 	if err := s.repo.CreateWithCreatorMembership(ctx, c); err != nil {
 		return Channel{}, err

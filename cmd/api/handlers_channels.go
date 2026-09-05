@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"bytes"
@@ -20,17 +20,17 @@ type createChannelRequest struct {
 }
 
 type channelResponse struct {
-	ChannelID    string `json:"channel_id"`
-	Name         string `json:"name"`
-	HomeRegion   string `json:"home_region"`
-	VirtualShard int    `json:"virtual_shard"`
+	ChannelID string `json:"channel_id"`
+	Name      string `json:"name"`
+	// Region is the app's cell placement (this instance's region — the
+	// router only sends the app's requests to its own cell). There is no
+	// per-channel home_region or virtual_shard anymore (ADR 0006).
+	Region string `json:"region"`
 }
 
-// handleCreateChannel always creates the channel in the handling instance's
-// own region — a channel's home region is simply wherever it was created
-// (INSTRUCTIONS.md §5). No forwarding is needed here; forwarding only
-// applies to writes against an *existing* channel whose home region may
-// differ from this instance.
+// handleCreateChannel creates the channel in this cell — the only cell the
+// app is pinned to. No region choice, no forwarding: the router already
+// routed this request to the app's cell.
 func (a *App) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	identity, _ := identityFromContext(r.Context())
 
@@ -68,7 +68,7 @@ func (a *App) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c, err := a.channelsSvc.CreateChannel(r.Context(), req.Name, identity.UserID, a.cfg.Region, identity.AppID)
+	c, err := a.channelsSvc.CreateChannel(r.Context(), req.Name, identity.UserID, identity.AppID)
 	if err != nil {
 		a.log.Error("create channel", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to create channel")
@@ -80,10 +80,9 @@ func (a *App) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, channelResponse{
-		ChannelID:    c.ChannelID.String(),
-		Name:         c.Name,
-		HomeRegion:   c.HomeRegion,
-		VirtualShard: c.VirtualShard,
+		ChannelID: c.ChannelID.String(),
+		Name:      c.Name,
+		Region:    a.cfg.Region,
 	})
 }
 
@@ -136,11 +135,6 @@ func (a *App) handleAddMember(w http.ResponseWriter, r *http.Request) {
 	// explicitly.
 	if route.AppID != identity.AppID {
 		writeError(w, http.StatusForbidden, "only channel members can add members")
-		return
-	}
-
-	if route.HomeRegion != a.cfg.Region {
-		a.forwardToHomeRegion(w, r, route.HomeRegion, body)
 		return
 	}
 
@@ -261,14 +255,13 @@ func (a *App) handleListMembers(w http.ResponseWriter, r *http.Request) {
 type userChannelResponse struct {
 	ChannelID           string `json:"channel_id"`
 	Name                string `json:"name"`
-	HomeRegion          string `json:"home_region"`
+	Region              string `json:"region"`
 	LastMessageSequence int64  `json:"last_message_sequence"`
 	LastMessageAt       string `json:"last_message_at,omitempty"`
 }
 
-// handleListMyChannels backs GET /users/me/channels: one control-plane query
-// keyed by user_id, never a scatter/gather across message shards
-// (INSTRUCTIONS.md §13).
+// handleListMyChannels backs GET /users/me/channels: one cell-local query
+// keyed by user_id, never a scatter/gather across shards (INSTRUCTIONS.md §13).
 func (a *App) handleListMyChannels(w http.ResponseWriter, r *http.Request) {
 	identity, _ := identityFromContext(r.Context())
 
@@ -284,7 +277,7 @@ func (a *App) handleListMyChannels(w http.ResponseWriter, r *http.Request) {
 		item := userChannelResponse{
 			ChannelID:           row.ChannelID.String(),
 			Name:                row.ChannelName,
-			HomeRegion:          row.HomeRegion,
+			Region:              a.cfg.Region,
 			LastMessageSequence: row.LastMessageSequence,
 		}
 		if row.LastMessageAt != nil {

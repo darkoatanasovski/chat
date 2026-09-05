@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"bytes"
@@ -122,17 +122,12 @@ func (a *App) handleCreatePoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
+	_, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
 	if !ok {
 		return
 	}
 
 	if !a.checkPollRateLimit(w, r, identity, quota.CapabilityPollCreate) {
-		return
-	}
-
-	if route.HomeRegion != a.cfg.Region {
-		a.forwardToHomeRegion(w, r, route.HomeRegion, body)
 		return
 	}
 
@@ -280,17 +275,12 @@ func (a *App) handleVotePoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
+	_, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
 	if !ok {
 		return
 	}
 
 	if !a.checkPollRateLimit(w, r, identity, quota.CapabilityPollVote) {
-		return
-	}
-
-	if route.HomeRegion != a.cfg.Region {
-		a.forwardToHomeRegion(w, r, route.HomeRegion, body)
 		return
 	}
 
@@ -350,17 +340,12 @@ func (a *App) handleClearPollVotes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
+	_, ok := a.checkChannelWriteAccess(w, r, channelID, identity)
 	if !ok {
 		return
 	}
 
 	if !a.checkPollRateLimit(w, r, identity, quota.CapabilityPollVote) {
-		return
-	}
-
-	if route.HomeRegion != a.cfg.Region {
-		a.forwardToHomeRegion(w, r, route.HomeRegion, nil)
 		return
 	}
 

@@ -160,7 +160,6 @@ func (r *Repo) ListMembersWithNames(ctx context.Context, channelID uuid.UUID) ([
 type UserChannel struct {
 	ChannelID           uuid.UUID
 	ChannelName         string
-	HomeRegion          string
 	LastMessageSequence int64
 	LastMessageAt       *time.Time
 }
@@ -207,7 +206,7 @@ func (r *Repo) MarkUnreadReminderSent(ctx context.Context, channelID, userID uui
 
 func (r *Repo) ListChannelsForUser(ctx context.Context, userID uuid.UUID) ([]UserChannel, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT uc.channel_id, c.name, c.home_region, uc.last_message_sequence, uc.last_message_at
+		SELECT uc.channel_id, c.name, uc.last_message_sequence, uc.last_message_at
 		FROM user_channels uc
 		JOIN channels c ON c.channel_id = uc.channel_id
 		WHERE uc.user_id = $1
@@ -221,7 +220,7 @@ func (r *Repo) ListChannelsForUser(ctx context.Context, userID uuid.UUID) ([]Use
 	var out []UserChannel
 	for rows.Next() {
 		var uc UserChannel
-		if err := rows.Scan(&uc.ChannelID, &uc.ChannelName, &uc.HomeRegion, &uc.LastMessageSequence, &uc.LastMessageAt); err != nil {
+		if err := rows.Scan(&uc.ChannelID, &uc.ChannelName, &uc.LastMessageSequence, &uc.LastMessageAt); err != nil {
 			return nil, fmt.Errorf("membership: scan: %w", err)
 		}
 		out = append(out, uc)

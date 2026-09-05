@@ -6,7 +6,7 @@
 // (docs/platform/security.md); everything else requires a dashboard session
 // (requireOrgUser), and team management additionally requires the owner
 // role (requireOwnerRole).
-package main
+package api
 
 import (
 	"errors"
@@ -65,6 +65,11 @@ type dashboardSignupRequest struct {
 	OrgName  string `json:"org_name"`
 	Email    string `json:"email"`
 	Password string `json:"password"`
+	// TurnstileToken is the Cloudflare Turnstile response from the signup
+	// widget. Verified only when TURNSTILE_SECRET is configured (empty =
+	// disabled, e.g. local/dev and tests), so it never breaks unprotected
+	// setups. See verifyTurnstile.
+	TurnstileToken string `json:"turnstile_token,omitempty"`
 }
 
 // handleDashboardSignup creates a NEW organization together with its first
@@ -81,6 +86,13 @@ func (a *App) handleDashboardSignup(w http.ResponseWriter, r *http.Request) {
 	var req dashboardSignupRequest
 	if !readJSON(w, r, &req) {
 		return
+	}
+	// Bot protection (Cloudflare Turnstile) — only enforced when configured.
+	if a.cfg.TurnstileSecret != "" {
+		if ok := verifyTurnstile(r.Context(), a.cfg.TurnstileSecret, req.TurnstileToken, clientIP(r)); !ok {
+			writeError(w, http.StatusForbidden, "captcha verification failed")
+			return
+		}
 	}
 	req.OrgName = strings.TrimSpace(req.OrgName)
 	if req.OrgName == "" || len(req.OrgName) > 128 {
@@ -528,16 +540,27 @@ func (a *App) handleDashboardRegions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load region usage")
 		return
 	}
-	appIDs := make([]int64, len(appList))
-	for i, app := range appList {
-		appIDs[i] = app.AppID
-	}
-
-	counts, err := a.usersSvc.CountByRegion(r.Context(), appIDs)
-	if err != nil {
-		a.log.Error("count users by region", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to load region usage")
-		return
+	// Region is now an app-level placement fact (config DB), not a per-user
+	// column: every user of an app lives in that app's cell/region. So the
+	// world-map sums each app's user count into its placement region.
+	//
+	// Caveat (control-plane split, see ADR 0006): this counts users in THIS
+	// cell's database. When an org's apps are spread across multiple cells,
+	// an org-wide rollup needs to aggregate per cell — the reason the
+	// dashboard/org API is a candidate to become a global control-plane
+	// service rather than a per-cell one.
+	counts := map[string]int{}
+	for _, app := range appList {
+		if app.Region == "" {
+			continue
+		}
+		n, err := a.usersSvc.CountByApp(r.Context(), app.AppID)
+		if err != nil {
+			a.log.Error("count users by app", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to load region usage")
+			return
+		}
+		counts[app.Region] += n
 	}
 
 	out := make([]regionUsageResponse, len(dashboardRegionOrder))
@@ -578,25 +601,30 @@ func (a *App) dashboardMessagesFor(r *http.Request, appIDs []int64) (dashboardMe
 		return dashboardMessagesResponse{}, fmt.Errorf("list channel route info: %w", err)
 	}
 
-	channelsByShard := map[string][]uuid.UUID{}
+	// Every channel of these apps lives in this cell's database; a channel's
+	// region is its app's placement. (Cross-cell caveat as in
+	// handleDashboardRegions — an org whose apps span cells needs a per-cell
+	// rollup.)
+	appRegion := map[int64]string{}
+	for _, id := range appIDs {
+		app, err := a.appsRepo.Get(r.Context(), id)
+		if err != nil {
+			return dashboardMessagesResponse{}, fmt.Errorf("resolve app region: %w", err)
+		}
+		appRegion[id] = app.Region
+	}
+
+	var channelIDs []uuid.UUID
 	regionByChannel := map[uuid.UUID]string{}
 	for _, c := range routeInfo {
-		shardID, err := a.router.PhysicalShardID(c.VirtualShard)
-		if err != nil {
-			return dashboardMessagesResponse{}, fmt.Errorf("resolve physical shard: %w", err)
-		}
-		channelsByShard[shardID] = append(channelsByShard[shardID], c.ChannelID)
-		regionByChannel[c.ChannelID] = c.HomeRegion
+		channelIDs = append(channelIDs, c.ChannelID)
+		regionByChannel[c.ChannelID] = appRegion[c.AppID]
 	}
 
 	counts := map[string]int64{}
 	var total int64
-	for shardID, channelIDs := range channelsByShard {
-		pool, err := a.shardPools.Get(shardID)
-		if err != nil {
-			return dashboardMessagesResponse{}, fmt.Errorf("resolve shard pool: %w", err)
-		}
-		sums, err := a.messagesRepo.SumSequencesByChannels(r.Context(), pool, channelIDs)
+	if len(channelIDs) > 0 {
+		sums, err := a.messagesRepo.SumSequencesByChannels(r.Context(), a.cellPool, channelIDs)
 		if err != nil {
 			return dashboardMessagesResponse{}, fmt.Errorf("sum message sequences: %w", err)
 		}
@@ -685,16 +713,10 @@ func (a *App) handleDashboardAppsMessagesDaily(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	channelsByShard := map[string][]uuid.UUID{}
+	var channelIDs []uuid.UUID
 	appByChannel := map[uuid.UUID]int64{}
 	for _, c := range routeInfo {
-		shardID, err := a.router.PhysicalShardID(c.VirtualShard)
-		if err != nil {
-			a.log.Error("resolve physical shard", "error", err)
-			writeError(w, http.StatusInternalServerError, "failed to load message usage")
-			return
-		}
-		channelsByShard[shardID] = append(channelsByShard[shardID], c.ChannelID)
+		channelIDs = append(channelIDs, c.ChannelID)
 		appByChannel[c.ChannelID] = c.AppID
 	}
 
@@ -718,15 +740,10 @@ func (a *App) handleDashboardAppsMessagesDaily(w http.ResponseWriter, r *http.Re
 		dailyByApp[app.AppID] = make([]int64, dashboardDailyWindowDays)
 	}
 
-	for shardID, channelIDs := range channelsByShard {
-		pool, err := a.shardPools.Get(shardID)
-		if err != nil {
-			a.log.Error("resolve shard pool", "error", err)
-			writeError(w, http.StatusInternalServerError, "failed to load message usage")
-			return
-		}
-
-		sums, err := a.messagesRepo.SumSequencesByChannels(r.Context(), pool, channelIDs)
+	// All these channels live in this cell's database (see the cross-cell
+	// caveat in handleDashboardRegions).
+	if len(channelIDs) > 0 {
+		sums, err := a.messagesRepo.SumSequencesByChannels(r.Context(), a.cellPool, channelIDs)
 		if err != nil {
 			a.log.Error("sum message sequences", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to load message usage")
@@ -736,7 +753,7 @@ func (a *App) handleDashboardAppsMessagesDaily(w http.ResponseWriter, r *http.Re
 			totalByApp[appByChannel[channelID]] += count
 		}
 
-		daily, err := a.messagesRepo.CountDailyByChannels(r.Context(), pool, channelIDs, since)
+		daily, err := a.messagesRepo.CountDailyByChannels(r.Context(), a.cellPool, channelIDs, since)
 		if err != nil {
 			a.log.Error("count daily messages", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to load message usage")

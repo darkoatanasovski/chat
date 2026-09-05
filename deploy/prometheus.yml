@@ -1,41 +1,31 @@
-# Scrapes every service's /metrics endpoint over the compose network by
-# service name — none of these ports need to be exposed to the host for
-# this to work, Prometheus runs inside the same network (see
-# docker-compose.yml). Each target gets an explicit `region` label since
-# that's not otherwise derivable from the Prometheus namespace alone (all
-# three api-* instances share the same metric names, chat_api_*).
+# Central Prometheus for the whole fleet (all regions and cells), fronting one
+# Grafana. In the cell model, cells PUSH their metrics here via remote-write
+# (each cell runs a Grafana Alloy collector — deploy/observability/alloy/cell.alloy
+# — enabled by --web.enable-remote-write-receiver in docker-compose.yml), so
+# this config no longer lists cell services as scrape targets. It only directly
+# scrapes the GLOBAL services co-located with it (router, control, og-service)
+# and itself.
+#
+# A production fleet would point remote-write at Grafana Mimir / Thanos / Grafana
+# Cloud instead of a single Prometheus, for horizontal storage and long
+# retention; the collector config doesn't change — only the remote_write URL.
 global:
   scrape_interval: 5s
   evaluation_interval: 5s
 
 scrape_configs:
-  - job_name: api
+  - job_name: router
     static_configs:
-      - targets: ["api-eu:9100"]
-        labels: { region: eu }
-      - targets: ["api-us:9100"]
-        labels: { region: us }
-      - targets: ["api-asia:9100"]
-        labels: { region: asia }
+      - targets: ["router:9100"]
 
-  - job_name: gateway
+  - job_name: control
     static_configs:
-      - targets: ["gateway-eu:9100"]
-        labels: { region: eu, instance_name: gateway-eu }
-      - targets: ["gateway-eu-2:9100"]
-        labels: { region: eu, instance_name: gateway-eu-2 }
-      - targets: ["gateway-us:9100"]
-        labels: { region: us, instance_name: gateway-us }
-      - targets: ["gateway-asia:9100"]
-        labels: { region: asia, instance_name: gateway-asia }
-
-  - job_name: worker
-    static_configs:
-      - targets: ["worker-outbox-a:9100"]
-        labels: { shard: shard-a }
-      - targets: ["worker-outbox-b:9100"]
-        labels: { shard: shard-b }
+      - targets: ["control:9100"]
 
   - job_name: og-service
     static_configs:
       - targets: ["og-service:9100"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

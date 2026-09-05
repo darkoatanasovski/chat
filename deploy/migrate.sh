@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# Applies additive SQL migrations to the control-plane DB and every shard DB.
-# Idempotent: tracks applied filenames in a schema_migrations table per database.
+# Applies additive SQL migrations to the global config DB (migrations/config)
+# and to every cell DB (migrations/cell, applied identically to each cell —
+# see docs/adr/0006-cell-based-tenant-routing.md). Idempotent: tracks applied
+# filenames in a schema_migrations table per database.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 : "${POSTGRES_USER:=chat}"
+
+# Compose Postgres services: the one config DB, then one per cell. Add a
+# cell's Postgres service name here when you add a cell to docker-compose.yml.
+CONFIG_DB_SERVICE="config-postgres"
+CELL_DB_SERVICES=("us-east-1-a-postgres")
 
 apply() {
   local compose_service="$1"
@@ -33,8 +40,9 @@ apply() {
   done
 }
 
-apply postgres-control migrations/control
-apply postgres-shard-a migrations/shard
-apply postgres-shard-b migrations/shard
+apply "$CONFIG_DB_SERVICE" migrations/config
+for cell_db in "${CELL_DB_SERVICES[@]}"; do
+  apply "$cell_db" migrations/cell
+done
 
 echo "==> migrations complete"
