@@ -16,18 +16,13 @@ type Config struct {
 	HTTPAddr    string
 	MetricsAddr string
 
-	ControlDSN string
-	ShardADSN  string
-	ShardBDSN  string
-
 	// Cell-based routing (docs/adr/0006-cell-based-tenant-routing.md).
 	// ConfigDSN is the global config database (migrations/config); every
 	// role and the router read app placement/credentials/settings from it
 	// via internal/appconfig. CellDSN is THIS cell's own Postgres
-	// (migrations/cell) holding all tenant data for the apps pinned here —
-	// it replaces the ShardADSN/ShardBDSN pair and the any-api-reaches-any-
-	// shard model. TopologyPath points at infra/topology.yaml (regions ->
-	// cells -> endpoints), read by the router.
+	// (migrations/cell) holding all tenant data for the apps pinned here.
+	// TopologyPath points at infra/topology.yaml (regions -> cells ->
+	// endpoints), read by the router.
 	ConfigDSN    string
 	CellDSN      string
 	TopologyPath string
@@ -76,11 +71,7 @@ type Config struct {
 	// first credential request) since it's the only caller that needs it.
 	AppSecretEncryptionKey []byte
 
-	ShardsConfigPath string
-	TiersConfigPath  string
-
-	// api: internal base URLs for forwarding writes to a channel's home region.
-	PeerAPIURL map[string]string
+	TiersConfigPath string
 
 	// api: browser origins allowed to call this API directly (e.g. the demo app).
 	CORSAllowedOrigins []string
@@ -93,9 +84,9 @@ type Config struct {
 	// (including unset) falls back to Fanout's own default.
 	FanoutShards int
 
-	// worker: which physical shard this instance publishes the outbox for.
-	ShardID  string
-	ShardDSN string
+	// The cell this instance belongs to (region is Region above). Used for
+	// logging/metrics labels; the cell's DB is CellDSN.
+	ShardID string
 
 	// api: Dodo Payments billing (self-serve plan upgrades from the
 	// console) — see cmd/api/handlers_billing.go. All empty/false is a
@@ -144,9 +135,6 @@ func Load() (Config, error) {
 		Region:             os.Getenv("REGION"),
 		HTTPAddr:           getenvDefault("HTTP_ADDR", ":8080"),
 		MetricsAddr:        getenvDefault("METRICS_ADDR", ":9100"),
-		ControlDSN:         os.Getenv("CONTROL_DSN"),
-		ShardADSN:          os.Getenv("SHARD_A_DSN"),
-		ShardBDSN:          os.Getenv("SHARD_B_DSN"),
 		ConfigDSN:          os.Getenv("CONFIG_DSN"),
 		CellDSN:            os.Getenv("CELL_DSN"),
 		TopologyPath:       getenvDefault("TOPOLOGY_CONFIG", "/etc/chat/topology.yaml"),
@@ -157,11 +145,9 @@ func Load() (Config, error) {
 		AuthSecret:         os.Getenv("AUTH_SECRET"),
 		TurnstileSecret:    os.Getenv("TURNSTILE_SECRET"),
 		InternalAuthKey:    os.Getenv("INTERNAL_AUTH_KEY"),
-		ShardsConfigPath:   os.Getenv("SHARDS_CONFIG"),
 		TiersConfigPath:    getenvDefault("TIERS_CONFIG", "/etc/chat/tiers.yaml"),
 		KafkaConsumerGroup: os.Getenv("KAFKA_CONSUMER_GROUP"),
 		ShardID:            os.Getenv("SHARD_ID"),
-		ShardDSN:           os.Getenv("SHARD_DSN"),
 		DodoAPIKey:         os.Getenv("DODO_PAYMENTS_API_KEY"),
 		DodoWebhookKey:     os.Getenv("DODO_PAYMENTS_WEBHOOK_KEY"),
 		DodoLiveMode:       os.Getenv("DODO_PAYMENTS_LIVE_MODE") == "true",
@@ -193,12 +179,6 @@ func Load() (Config, error) {
 	// :3000 is the demo/ chat test harness, :3001 is the console/ app.
 	origins := getenvDefault("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001")
 	c.CORSAllowedOrigins = strings.Split(origins, ",")
-
-	c.PeerAPIURL = map[string]string{
-		"eu":   os.Getenv("PEER_API_EU_URL"),
-		"us":   os.Getenv("PEER_API_US_URL"),
-		"asia": os.Getenv("PEER_API_ASIA_URL"),
-	}
 
 	if c.AuthSecret == "" {
 		return c, fmt.Errorf("config: AUTH_SECRET is required")

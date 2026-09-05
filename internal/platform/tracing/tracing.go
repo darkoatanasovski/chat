@@ -1,7 +1,6 @@
 // Package tracing propagates the identifiers INSTRUCTIONS.md §37 requires on
-// every hot-path operation (request_id, channel_id, region, virtual_shard,
-// physical_shard) through context.Context, and gives every request a stable
-// request_id.
+// every hot-path operation (request_id, channel_id, region, shard) through
+// context.Context, and gives every request a stable request_id.
 //
 // This is intentionally a thin, dependency-free layer rather than a full OTel
 // SDK integration: it is the seam where a real tracer (OTel/Jaeger/Tempo)
@@ -21,11 +20,10 @@ type ctxKey int
 const fieldsKey ctxKey = iota
 
 type Fields struct {
-	RequestID     string
-	ChannelID     string
-	Region        string
-	VirtualShard  int
-	PhysicalShard string
+	RequestID string
+	ChannelID string
+	Region    string
+	Shard     string
 }
 
 func NewRequestID() string {

@@ -50,7 +50,7 @@ handling code (§49 rule 8). `internal/events` currently only defines
    If the event originates on the **control-plane** DB (e.g. a future
    `user.blocked`), the control-plane DB doesn't currently have an
    `outbox_events` table — add one via the `new-migration` skill first,
-   mirroring `migrations/shard/0001_init.sql`'s table, and add a
+   mirroring `migrations/cell/0001_init.sql`'s table, and add a
    `worker control` mode/service in `cmd/worker` + `deploy/docker-compose.yml`
    analogous to `worker-outbox-a`/`-b`.
 

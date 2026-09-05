@@ -47,15 +47,11 @@ npm run dev     # http://localhost:3000
 ## Testing cross-region behavior
 
 Open two browser profiles (or one normal + one incognito), create a user in
-each with a *different* region, create a channel as one, and add the other
-as a member using their `user_id` from the `/channels` page. Sending a
-message from the non-home-region user exercises
-`cmd/api`'s cross-region forwarding
-([../platform/multi-region.md](../platform/multi-region.md)) — you won't see
-this directly in the UI, but the message still arrives correctly and you can
-confirm the forward happened by checking
-`cross_region_latency_seconds` on the sending region's `/metrics` (e.g.
-`curl localhost:8082/metrics | grep cross_region`).
+create a channel as one, and add the other as a member using their `user_id`
+from the `/channels` page. All of an App's users and channels live in the same
+cell (the App's placement), so messages are delivered within that cell's
+realtime fanout — see [../platform/multi-region.md](../platform/multi-region.md)
+and [../adr/0006-cell-based-tenant-routing.md](../adr/0006-cell-based-tenant-routing.md).
 
 ## What this app is not
 

@@ -1,3 +1,13 @@
+// Package routing resolves a channel_id to the App that owns it (app_id), the
+// tenant-isolation boundary checked on every channel-scoped request (see
+// cmd/api's route.AppID == identity.AppID checks). It is cache-first: a
+// channel's app_id is fixed at creation, so it's cached in Redis with a
+// Postgres fallback.
+//
+// This is all that remains of the old virtual-shard/home-region routing: in
+// the cell model an App (and all its channels) lives in exactly one cell, so
+// there is no per-channel region or shard to resolve — only which App a
+// channel belongs to. See docs/adr/0006-cell-based-tenant-routing.md.
 package routing
 
 import (
@@ -5,36 +15,26 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
 
-const homeRegionCacheTTL = 10 * time.Minute
+const routeCacheTTL = 10 * time.Minute
 
-// ChannelRoute is the immutable-after-creation metadata every channel-scoped
-// request needs: which region is authoritative for writes, and which App
-// this channel belongs to (the tenant-isolation boundary — see
-// cmd/api's channel.AppID == identity.AppID checks).
+// ChannelRoute is the immutable-after-creation fact a channel-scoped request
+// needs: which App the channel belongs to.
 type ChannelRoute struct {
-	HomeRegion string
-	AppID      int64
+	AppID int64
 }
 
-// ChannelRouteSource is the authoritative fallback used on cache miss. In
-// practice this is internal/channels' control-plane lookup.
+// ChannelRouteSource is the authoritative fallback used on cache miss — in
+// practice internal/channels' cell-DB lookup.
 type ChannelRouteSource func(ctx context.Context, channelID string) (ChannelRoute, error)
 
-// RegionResolver answers channel_id -> {home_region, app_id}, cache-first
-// (INSTRUCTIONS.md §6: "heavily cached... not a central database lookup for
-// every message"). Both fields are resolved together in one cached lookup
-// since both are fixed at channel creation and a request needing one
-// routinely needs the other (home_region to decide forwarding, app_id to
-// verify tenant isolation) — two independent caches would just double the
-// Redis round trips for no benefit. The cache is a simple TTL'd key, not
-// authoritative: on miss or Redis unavailability it always falls back to
-// Postgres.
+// RegionResolver answers channel_id -> app_id, cache-first. The cache is a
+// simple TTL'd Redis key, not authoritative: on miss or Redis unavailability
+// it always falls back to the source (Postgres).
 type RegionResolver struct {
 	redis  *redis.Client
 	source ChannelRouteSource
@@ -49,8 +49,8 @@ func (r *RegionResolver) Resolve(ctx context.Context, channelID string) (Channel
 
 	if r.redis != nil {
 		if packed, err := r.redis.Get(ctx, key).Result(); err == nil && packed != "" {
-			if route, ok := unpackRoute(packed); ok {
-				return route, nil
+			if appID, perr := strconv.ParseInt(packed, 10, 64); perr == nil {
+				return ChannelRoute{AppID: appID}, nil
 			}
 		} else if err != nil && !errors.Is(err, redis.Nil) {
 			// Redis being unhealthy must not take down routing; fall through to Postgres.
@@ -64,33 +64,16 @@ func (r *RegionResolver) Resolve(ctx context.Context, channelID string) (Channel
 	}
 
 	if r.redis != nil {
-		_ = r.redis.Set(ctx, key, packRoute(route), homeRegionCacheTTL).Err()
+		_ = r.redis.Set(ctx, key, strconv.FormatInt(route.AppID, 10), routeCacheTTL).Err()
 	}
 	return route, nil
 }
 
-// InvalidateRoute is unused for V1 (a channel's route is immutable after
-// creation) but kept as the seam for a future "move channel region"
-// operation.
+// InvalidateRoute drops the cached app_id for a channel. Unused today (a
+// channel's App is immutable) but kept as the seam for a future tenant-move.
 func (r *RegionResolver) InvalidateRoute(ctx context.Context, channelID string) error {
 	if r.redis == nil {
 		return nil
 	}
 	return r.redis.Del(ctx, "route:channel:"+channelID).Err()
-}
-
-func packRoute(route ChannelRoute) string {
-	return route.HomeRegion + "|" + strconv.FormatInt(route.AppID, 10)
-}
-
-func unpackRoute(packed string) (ChannelRoute, bool) {
-	region, appIDStr, ok := strings.Cut(packed, "|")
-	if !ok {
-		return ChannelRoute{}, false
-	}
-	appID, err := strconv.ParseInt(appIDStr, 10, 64)
-	if err != nil {
-		return ChannelRoute{}, false
-	}
-	return ChannelRoute{HomeRegion: region, AppID: appID}, true
 }

@@ -33,8 +33,6 @@ type Metrics struct {
 	RateLimitRejectionsTotal *prometheus.CounterVec
 	QuotaRejectionsTotal     *prometheus.CounterVec
 
-	CrossRegionLatency *prometheus.HistogramVec
-
 	MessagesExpiredTotal prometheus.Counter
 
 	// UnreadRemindersSentTotal counts unread.reminder notices cmd/worker's
@@ -106,11 +104,6 @@ func New(namespace string) *Metrics {
 		QuotaRejectionsTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace, Name: "quota_rejections_total",
 		}, []string{"capability"}),
-
-		CrossRegionLatency: promauto.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: namespace, Name: "cross_region_latency_seconds",
-			Buckets: prometheus.DefBuckets,
-		}, []string{"from_region", "to_region"}),
 
 		MessagesExpiredTotal: promauto.NewCounter(prometheus.CounterOpts{
 			Namespace: namespace, Name: "messages_expired_total",
