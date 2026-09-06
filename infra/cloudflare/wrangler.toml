@@ -34,9 +34,11 @@ REGIONS = '{"us-east-1":"https://api-production-15fc.up.railway.app"}'
 WS_REGIONS = '{"us-east-1":"https://ws-production-f5ba.up.railway.app"}'
 # The global control-plane service (chat control) — org/dashboard/billing.
 CONTROL_ORIGIN = "https://control-production-08ab.up.railway.app"
-# Public base URL for R2 attachments (the bucket's custom domain). Uploads
-# return "<base>/<key>"; reads are served directly by R2, off the data path.
-ATTACHMENTS_BASE_URL = "https://cdn.chat.io"
+# Public base URL for R2 attachments. Uploads return "<base>/<key>"; reads are
+# served back through this Worker's GET /uploads/<key> route (handleUploadRead)
+# so the demo works without a separate CDN domain. Point this at a dedicated R2
+# custom domain in production to keep reads off the Worker.
+ATTACHMENTS_BASE_URL = "https://chat-edge-router.reedee.workers.dev/uploads"
 # JSON placements source for the scheduled KV refresh: returns
 # [{"key":"apikey:..","region":"..","shard":".."}, ...]. Point it at a
 # control-plane export endpoint (protect with Access), or leave empty to rely

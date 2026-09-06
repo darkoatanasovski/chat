@@ -41,7 +41,24 @@ type MessageCreatedPayload struct {
 	// and render the poll without waiting for a follow-up request to
 	// discover it exists.
 	PollID    *uuid.UUID `json:"poll_id,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
+	// Attachments carries the message's client-supplied file/media references
+	// (the "uploads" capability) so a realtime consumer renders them live
+	// without a follow-up fetch — the same "durable event carries everything
+	// needed" shape as the fields above. Empty/omitted when there are none.
+	// Defined here (rather than importing internal/messages, which would be a
+	// cycle) exactly like ReactionSummary is.
+	Attachments []Attachment `json:"attachments,omitempty"`
+	CreatedAt   time.Time    `json:"created_at"`
+}
+
+// Attachment is the wire shape of one message attachment — mirrors
+// internal/messages.Attachment, kept here for the same reason ReactionSummary
+// is (internal/messages imports this package, so this package can't import it).
+type Attachment struct {
+	URL       string `json:"url"`
+	Type      string `json:"type,omitempty"`
+	Filename  string `json:"filename,omitempty"`
+	SizeBytes int64  `json:"size_bytes,omitempty"`
 }
 
 const TopicReactionUpdated = "reaction.updated"

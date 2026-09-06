@@ -46,6 +46,11 @@ export default {
     if (url.pathname === "/uploads" && request.method === "POST") {
       return handleUpload(request, env);
     }
+    // Attachment reads are served back through the Worker from R2 so the demo
+    // works without a separate CDN domain (ATTACHMENTS_BASE_URL points here).
+    if (url.pathname.startsWith("/uploads/") && request.method === "GET") {
+      return handleUploadRead(url, request, env);
+    }
 
     if (isControlPath(url.pathname)) {
       if (!env.CONTROL_ORIGIN) {
@@ -131,12 +136,12 @@ function recordAnalytics(env, { plane, region, shard, status }) {
 // can't be anonymous, and namespaces objects by app to keep tenants separate.
 async function handleUpload(request, env) {
   if (!env.ATTACHMENTS) {
-    return jsonError(404, "attachments (R2) not configured");
+    return jsonError(404, "attachments (R2) not configured", request);
   }
   const url = new URL(request.url);
   const pk = await resolvePlacementKey(request, url, env);
   if (!pk) {
-    return jsonError(401, "upload requires a valid api_key or bearer token");
+    return jsonError(401, "upload requires a valid api_key or bearer token", request);
   }
   const ext = extensionFor(request.headers.get("content-type"));
   const key = `${pk.replace(/[^A-Za-z0-9_-]/g, "_")}/${crypto.randomUUID()}${ext}`;
@@ -145,10 +150,28 @@ async function handleUpload(request, env) {
       httpMetadata: { contentType: request.headers.get("content-type") || "application/octet-stream" },
     });
   } catch {
-    return jsonError(502, "upload failed");
+    return jsonError(502, "upload failed", request);
   }
   const base = (env.ATTACHMENTS_BASE_URL || "").replace(/\/$/, "");
-  return Response.json({ url: base ? `${base}/${key}` : key, key });
+  return Response.json({ url: base ? `${base}/${key}` : key, key }, { headers: corsHeaders(request) });
+}
+
+// handleUploadRead streams an object back from R2. Public + immutable (the key
+// is a random UUID), so it caches hard and needs no auth to read.
+async function handleUploadRead(url, request, env) {
+  if (!env.ATTACHMENTS) {
+    return jsonError(404, "attachments (R2) not configured", request);
+  }
+  const key = decodeURIComponent(url.pathname.slice("/uploads/".length));
+  if (!key) return jsonError(404, "not found", request);
+  const obj = await env.ATTACHMENTS.get(key);
+  if (!obj || !obj.body) return jsonError(404, "not found", request);
+  const headers = new Headers();
+  obj.writeHttpMetadata(headers);
+  headers.set("etag", obj.httpEtag);
+  headers.set("cache-control", "public, max-age=31536000, immutable");
+  headers.set("access-control-allow-origin", request.headers.get("Origin") || "*");
+  return new Response(obj.body, { headers });
 }
 
 function extensionFor(contentType) {

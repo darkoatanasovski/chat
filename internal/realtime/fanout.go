@@ -23,10 +23,11 @@ type DeliveryFrame struct {
 	Sequence         int64      `json:"sequence"`
 	SenderID         uuid.UUID  `json:"sender_id"`
 	Body             string     `json:"body"`
-	ParentID         *uuid.UUID `json:"parent_id,omitempty"`
-	ParentReplyCount *int64     `json:"parent_reply_count,omitempty"`
-	PollID           *uuid.UUID `json:"poll_id,omitempty"`
-	CreatedAt        string     `json:"created_at"`
+	ParentID         *uuid.UUID          `json:"parent_id,omitempty"`
+	ParentReplyCount *int64              `json:"parent_reply_count,omitempty"`
+	PollID           *uuid.UUID          `json:"poll_id,omitempty"`
+	Attachments      []events.Attachment `json:"attachments,omitempty"`
+	CreatedAt        string              `json:"created_at"`
 }
 
 // ReactionDeliveryFrame is the JSON payload pushed to WebSocket clients for
@@ -344,6 +345,7 @@ func (f *Fanout) handleMessageCreated(ctx context.Context, msg kafkago.Message) 
 		ParentID:         payload.ParentID,
 		ParentReplyCount: payload.ParentReplyCount,
 		PollID:           payload.PollID,
+		Attachments:      payload.Attachments,
 		CreatedAt:        payload.CreatedAt.Format("2006-01-02T15:04:05.000Z07:00"),
 	})
 	if err != nil {

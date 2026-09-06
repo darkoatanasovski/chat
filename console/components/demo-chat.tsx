@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, CheckCheck, Hash, Pencil, Plus, SendHorizontal, Smile } from "lucide-react";
+import { Check, CheckCheck, FileText, Hash, Paperclip, Pencil, Plus, SendHorizontal, Smile } from "lucide-react";
 
 // Live chat demo for the landing page. A visitor picks a username, the server
 // route (/api/demo/session) mints them an end-user in the ENTERPRISE demo app
@@ -47,6 +47,7 @@ const CHANNELS = [
 
 type Status = "sending" | "delivered" | "read";
 type Reaction = { reaction: string; user_id: string };
+type Attachment = { url: string; type?: string; filename?: string; size_bytes?: number };
 type Message = {
   message_id: string;
   sender_id: string;
@@ -56,9 +57,19 @@ type Message = {
   edited_at?: string | null;
   reaction_counts: Record<string, number>;
   latest_reactions: Reaction[];
+  attachments?: Attachment[];
   cid?: string; // client id for optimistic sends, before the server echoes back
   pending?: boolean; // true while the POST is in flight
 };
+
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+// True when a message's body is just our filename placeholder (a file sent
+// with no caption), so we render the attachment alone without a text bubble.
+function hasCaption(m: Message): boolean {
+  if (!m.body) return false;
+  if (m.attachments?.length === 1 && m.body === m.attachments[0].filename) return false;
+  return true;
+}
 type Session = { token: string; userId: string; displayName: string; channelId: string };
 
 const uuid = () => crypto.randomUUID();
@@ -141,6 +152,35 @@ function Ticks({ status }: { status: Status }) {
   );
 }
 
+function AttachmentView({ a, mine }: { a: Attachment; mine: boolean }) {
+  const isImage = (a.type || "").startsWith("image/");
+  if (isImage) {
+    return (
+      <a href={a.url} target="_blank" rel="noreferrer" className="mt-1 block">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={a.url}
+          alt={a.filename || "image"}
+          className="max-h-52 max-w-full rounded-xl border border-border object-cover"
+        />
+      </a>
+    );
+  }
+  return (
+    <a
+      href={a.url}
+      target="_blank"
+      rel="noreferrer"
+      className={`mt-1 inline-flex items-center gap-2 rounded-xl border border-border px-3 py-2 text-xs transition-colors hover:border-accent ${
+        mine ? "bg-bg text-text" : "bg-surface-2 text-text"
+      }`}
+    >
+      <FileText className="h-4 w-4 shrink-0 text-text-muted" />
+      <span className="max-w-[12rem] truncate">{a.filename || "file"}</span>
+    </a>
+  );
+}
+
 export default function DemoChat() {
   const [session, setSession] = useState<Session | null>(null);
   const [username, setUsername] = useState("");
@@ -156,11 +196,13 @@ export default function DemoChat() {
   const [editing, setEditing] = useState<{ id: string; body: string } | null>(null);
   const [active, setActive] = useState("general");
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [uploading, setUploading] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<HTMLInputElement | null>(null);
   const emojiRef = useRef<HTMLDivElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
   const typingSentAt = useRef(0);
   const typingStopTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingClear = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -329,6 +371,7 @@ export default function DemoChat() {
           sequence: f.sequence as number,
           reaction_counts: {},
           latest_reactions: [],
+          attachments: (f.attachments as Attachment[]) || [],
         };
         setMessages((prev) => {
           if (prev.some((x) => x.message_id === m.message_id)) return prev;
@@ -422,41 +465,90 @@ export default function DemoChat() {
     typingStopTimer.current = setTimeout(() => sendTyping(false), 2500);
   }
 
-  async function send() {
-    const body = draft.trim();
-    if (!body || !session) return;
-    setDraft("");
-    sendTyping(false);
+  // Core send with an optimistic bubble (so ticks advance sending → delivered)
+  // that reconciles against the server's echo. Body is required by the API, so
+  // a file with no caption sends its filename as the body (hidden at render).
+  async function postMessage(body: string, attachments: Attachment[] = []) {
+    if (!session) return;
     const cid = uuid();
-    // Optimistic bubble so the sender sees sending → delivered ticks advance.
+    const finalBody = body || attachments[0]?.filename || "file";
     const temp: Message = {
       message_id: `tmp-${cid}`,
       cid,
       pending: true,
       sender_id: session.userId,
-      body,
+      body: finalBody,
       created_at: new Date().toISOString(),
       sequence: Number.MAX_SAFE_INTEGER,
       reaction_counts: {},
       latest_reactions: [],
+      attachments,
     };
     setMessages((prev) => [...prev, temp]);
-    try {
-      const r = await authed(`/channels/${session.channelId}/messages`, {
-        method: "POST",
-        body: JSON.stringify({ client_message_id: cid, body }),
-      });
-      const created: Message = await r.json();
-      setMessages((prev) => {
-        // The WS echo may have already replaced the temp; if so, drop the temp.
-        if (prev.some((x) => x.message_id === created.message_id)) {
-          return prev.filter((x) => x.cid !== cid);
-        }
-        return prev.map((x) => (x.cid === cid ? { ...created, reaction_counts: {}, latest_reactions: [] } : x));
-      });
-    } catch {
+    const r = await authed(`/channels/${session.channelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        client_message_id: cid,
+        body: finalBody,
+        ...(attachments.length ? { attachments } : {}),
+      }),
+    });
+    if (!r.ok) {
       setMessages((prev) => prev.filter((x) => x.cid !== cid));
+      throw new Error("send failed");
+    }
+    const created: Message = await r.json();
+    setMessages((prev) => {
+      // The WS echo may have already replaced the temp; if so, drop the temp.
+      if (prev.some((x) => x.message_id === created.message_id)) {
+        return prev.filter((x) => x.cid !== cid);
+      }
+      return prev.map((x) =>
+        x.cid === cid ? { ...created, reaction_counts: {}, latest_reactions: [] } : x,
+      );
+    });
+  }
+
+  async function send() {
+    const body = draft.trim();
+    if (!body || !session) return;
+    setDraft("");
+    sendTyping(false);
+    try {
+      await postMessage(body);
+    } catch {
       setDraft(body);
+    }
+  }
+
+  async function onFilePicked(file: File | undefined) {
+    if (!file || !session) return;
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setError("file is too large (max 5 MB)");
+      return;
+    }
+    setUploading(true);
+    setError(null);
+    try {
+      const up = await fetch(`${API}/uploads`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${session.token}`,
+          "content-type": file.type || "application/octet-stream",
+        },
+        body: file,
+      });
+      if (!up.ok) throw new Error("upload failed");
+      const { url } = (await up.json()) as { url: string };
+      const caption = draft.trim();
+      setDraft("");
+      await postMessage(caption, [
+        { url, type: file.type, filename: file.name, size_bytes: file.size },
+      ]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "upload failed");
+    } finally {
+      setUploading(false);
     }
   }
 
@@ -653,9 +745,16 @@ export default function DemoChat() {
                           <button onClick={() => setEditing(null)} className="text-xs text-text-faint">cancel</button>
                         </div>
                       ) : (
-                        <div className="max-w-[80%] rounded-2xl rounded-br-md bg-accent px-3.5 py-2 text-[13px] leading-snug text-bg">
-                          {m.body}
-                        </div>
+                        <>
+                          {hasCaption(m) && (
+                            <div className="max-w-[80%] rounded-2xl rounded-br-md bg-accent px-3.5 py-2 text-[13px] leading-snug text-bg">
+                              {m.body}
+                            </div>
+                          )}
+                          {m.attachments?.map((a, i) => (
+                            <AttachmentView key={i} a={a} mine />
+                          ))}
+                        </>
                       )}
                       <div className="mt-1 flex items-center gap-1.5 pr-1 text-[10px] text-text-faint">
                         {editable && (
@@ -713,9 +812,14 @@ export default function DemoChat() {
                       >
                         {names[m.sender_id] || "Someone"}
                       </span>
-                      <div className="rounded-2xl rounded-bl-md bg-surface-2 px-3.5 py-2 text-[13px] leading-snug text-text">
-                        {m.body}
-                      </div>
+                      {hasCaption(m) && (
+                        <div className="rounded-2xl rounded-bl-md bg-surface-2 px-3.5 py-2 text-[13px] leading-snug text-text">
+                          {m.body}
+                        </div>
+                      )}
+                      {m.attachments?.map((a, i) => (
+                        <AttachmentView key={i} a={a} mine={false} />
+                      ))}
                       <div className="mt-1 flex items-center gap-1.5 pl-1">
                         {reactionPills.length > 0 && (
                           <span className="inline-flex items-center gap-1">
@@ -766,18 +870,43 @@ export default function DemoChat() {
               )}
             </div>
 
-            <div className="h-4 px-4 text-[11px] text-text-faint">
-              {typers.length > 0 &&
-                `${typers.slice(0, 3).join(", ")} ${typers.length === 1 ? "is" : "are"} typing…`}
+            <div className="h-4 px-4 text-[11px]">
+              {error ? (
+                <span className="text-danger">{error}</span>
+              ) : uploading ? (
+                <span className="text-text-faint">uploading…</span>
+              ) : (
+                <span className="text-text-faint">
+                  {typers.length > 0 &&
+                    `${typers.slice(0, 3).join(", ")} ${typers.length === 1 ? "is" : "are"} typing…`}
+                </span>
+              )}
             </div>
 
             <div className="flex items-center gap-2 border-t border-border-soft px-3 py-3">
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/*,application/pdf"
+                className="hidden"
+                onChange={(e) => {
+                  onFilePicked(e.target.files?.[0]);
+                  e.target.value = "";
+                }}
+              />
               <button
                 type="button"
-                aria-label="Add"
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-text-muted hover:text-text"
+                aria-label="Attach a file"
+                title="Attach a file"
+                disabled={uploading}
+                onClick={() => fileRef.current?.click()}
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-text-muted hover:text-text disabled:opacity-50"
               >
-                <Plus className="h-[18px] w-[18px]" />
+                {uploading ? (
+                  <Paperclip className="h-[18px] w-[18px] animate-pulse text-accent" />
+                ) : (
+                  <Plus className="h-[18px] w-[18px]" />
+                )}
               </button>
               <div className="flex flex-1 items-center gap-2 rounded-full border border-border bg-bg px-3.5 py-2 focus-within:border-accent">
                 <input

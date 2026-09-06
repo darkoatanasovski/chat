@@ -60,6 +60,20 @@ type Attachment struct {
 	SizeBytes int64  `json:"size_bytes,omitempty"`
 }
 
+// eventAttachments maps storage attachments to their wire shape for the
+// message.created event (events.Attachment lives in the events package to
+// avoid an import cycle — see its doc comment).
+func eventAttachments(atts []Attachment) []events.Attachment {
+	if len(atts) == 0 {
+		return nil
+	}
+	out := make([]events.Attachment, len(atts))
+	for i, a := range atts {
+		out[i] = events.Attachment{URL: a.URL, Type: a.Type, Filename: a.Filename, SizeBytes: a.SizeBytes}
+	}
+	return out
+}
+
 // LinkPreview is the "url_enrichment" capability's best-effort metadata for
 // the first URL found in a message's body — filled in asynchronously after
 // the message is created (see cmd/api's enrichLinkPreview) by a fire-and-
@@ -315,6 +329,7 @@ func (r *Repo) Send(ctx context.Context, pool *pgxpool.Pool, channelID, senderID
 			ParentID:         parentID,
 			ParentReplyCount: parentReplyCount,
 			PollID:           pollID,
+			Attachments:      eventAttachments(attachments),
 			CreatedAt:        now,
 		}
 		if err := events.InsertOutbox(ctx, tx, events.TopicMessageCreated, channelID, payload); err != nil {
@@ -572,6 +587,7 @@ func (r *Repo) Approve(ctx context.Context, pool *pgxpool.Pool, channelID, messa
 		Body:            m.Body,
 		ParentID:        m.ParentID,
 		PollID:          m.PollID,
+		Attachments:     eventAttachments(m.Attachments),
 		CreatedAt:       m.CreatedAt,
 	}
 	if err := events.InsertOutbox(ctx, tx, events.TopicMessageCreated, channelID, payload); err != nil {
