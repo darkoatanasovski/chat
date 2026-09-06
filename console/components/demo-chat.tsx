@@ -854,7 +854,7 @@ export default function DemoChat() {
             );
           })}
         </nav>
-        <div className="flex items-center gap-2 border-t border-border-soft px-3 py-3">
+        <div className="flex h-[68px] items-center gap-2 border-t border-border-soft px-3">
           <Avatar name={session.displayName} size={28} />
           <div className="min-w-0 flex-1">
             <div className="truncate text-xs font-medium text-text">{session.displayName}</div>
@@ -1078,7 +1078,7 @@ export default function DemoChat() {
               )}
             </div>
 
-            <div className="flex items-center gap-2 border-t border-border-soft px-3 py-3">
+            <div className="flex h-[68px] items-center gap-2 border-t border-border-soft px-3">
               <input
                 ref={fileRef}
                 type="file"
