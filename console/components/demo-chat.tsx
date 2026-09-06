@@ -171,7 +171,7 @@ function Ticks({ status }: { status: Status }) {
   );
 }
 
-function AttachmentView({ a, mine }: { a: Attachment; mine: boolean }) {
+function AttachmentView({ a, mine, onLoaded }: { a: Attachment; mine: boolean; onLoaded?: () => void }) {
   const isImage = (a.type || "").startsWith("image/");
   if (isImage) {
     return (
@@ -180,6 +180,7 @@ function AttachmentView({ a, mine }: { a: Attachment; mine: boolean }) {
         <img
           src={a.url}
           alt={a.filename || "image"}
+          onLoad={onLoaded}
           className="max-h-52 max-w-full rounded-xl border border-border object-cover"
         />
       </a>
@@ -229,7 +230,7 @@ function linkify(text: string) {
   return out;
 }
 
-function LinkPreviewCard({ p, onRemove }: { p: LinkPreview; onRemove?: () => void }) {
+function LinkPreviewCard({ p, onRemove, onLoaded }: { p: LinkPreview; onRemove?: () => void; onLoaded?: () => void }) {
   return (
     <a
       href={p.url}
@@ -239,7 +240,7 @@ function LinkPreviewCard({ p, onRemove }: { p: LinkPreview; onRemove?: () => voi
     >
       {p.image_url && (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={p.image_url} alt="" className="h-28 w-full object-cover" />
+        <img src={p.image_url} alt="" onLoad={onLoaded} className="h-28 w-full object-cover" />
       )}
       <div className="px-3 py-2">
         {p.site_name && <div className="text-[10px] uppercase tracking-wide text-text-faint">{p.site_name}</div>}
@@ -282,6 +283,7 @@ export default function DemoChat() {
 
   const wsRef = useRef<WebSocket | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const atBottomRef = useRef(true); // pinned to bottom until the user scrolls up
   const draftRef = useRef<HTMLInputElement | null>(null);
   const emojiRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -605,9 +607,21 @@ export default function DemoChat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
-  // autoscroll + mark the newest messages read
+  const scrollToBottom = useCallback(() => {
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
+  // When an image/preview finishes loading and grows the list, keep us pinned
+  // to the bottom (only if the user hasn't scrolled up).
+  const onMediaLoaded = useCallback(() => {
+    if (atBottomRef.current) scrollToBottom();
+  }, [scrollToBottom]);
+
+  // autoscroll (after layout) + mark the newest messages read. atBottomRef
+  // keeps us pinned to the bottom while the user hasn't scrolled up, so late
+  // media loads (images, link previews) don't leave the newest message hidden.
   useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
+    if (atBottomRef.current) requestAnimationFrame(scrollToBottom);
     if (session && messages.length) markRead();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, typing]);
@@ -905,7 +919,14 @@ export default function DemoChat() {
           </div>
         ) : (
           <>
-            <div ref={listRef} className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-5">
+            <div
+              ref={listRef}
+              onScroll={() => {
+                const el = listRef.current;
+                if (el) atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+              }}
+              className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-5"
+            >
               {messages.length === 0 && (
                 <p className="m-auto text-sm text-text-faint">No messages yet — say hi 👋</p>
               )}
@@ -939,10 +960,10 @@ export default function DemoChat() {
                             </div>
                           )}
                           {m.attachments?.map((a, i) => (
-                            <AttachmentView key={i} a={a} mine />
+                            <AttachmentView key={i} a={a} mine onLoaded={onMediaLoaded} />
                           ))}
                           {m.link_preview && (
-                            <LinkPreviewCard p={m.link_preview} onRemove={() => removeLinkPreview(m)} />
+                            <LinkPreviewCard p={m.link_preview} onRemove={() => removeLinkPreview(m)} onLoaded={onMediaLoaded} />
                           )}
                         </>
                       )}
@@ -1010,9 +1031,9 @@ export default function DemoChat() {
                           </div>
                         )}
                         {m.attachments?.map((a, i) => (
-                          <AttachmentView key={i} a={a} mine={false} />
+                          <AttachmentView key={i} a={a} mine={false} onLoaded={onMediaLoaded} />
                         ))}
-                        {m.link_preview && <LinkPreviewCard p={m.link_preview} />}
+                        {m.link_preview && <LinkPreviewCard p={m.link_preview} onLoaded={onMediaLoaded} />}
                       </div>
                       <div className="flex gap-0.5 self-center opacity-0 transition-opacity duration-150 group-hover:opacity-100">
                         {REACTIONS.map((r) => (
