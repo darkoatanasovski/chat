@@ -103,8 +103,8 @@ export default function LandingPage() {
         <section id="try" className="mx-auto max-w-6xl px-6 py-20">
           <h2 className="text-center text-2xl font-semibold text-text">Try it live</h2>
           <p className="mx-auto mt-3 max-w-xl text-center text-sm text-text-muted">
-            Pick a name, join the shared Lobby, and test the real thing — messages, reactions,
-            edits, and typing indicators, delivered over the live platform.
+            Pick a name, join the shared workspace, and test the real thing — messages, reactions,
+            edits, typing indicators, and read receipts, delivered over the live platform.
           </p>
           <div className="mt-10">
             <DemoChat />

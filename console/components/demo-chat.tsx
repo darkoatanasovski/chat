@@ -1,11 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, CheckCheck, Hash, Plus, SendHorizontal, Smile } from "lucide-react";
 
 // Live chat demo for the landing page. A visitor picks a username, the server
 // route (/api/demo/session) mints them an end-user in the ENTERPRISE demo app
 // and drops them in the shared Lobby, and this widget then exercises the real
-// platform over the Cloudflare edge: send, react, edit, and typing indicators.
+// platform over the Cloudflare edge: send, react, edit, typing indicators, and
+// read receipts. It's drawn in the landing theme's own tokens so it reads as a
+// working product window next to the animated hero mockup — outgoing messages
+// sit on the right with delivery ticks, everyone else on the left with an
+// avatar, and a left sidebar lists the workspace's channels.
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "";
 const WS = process.env.NEXT_PUBLIC_GATEWAY_BASE || "";
@@ -20,6 +25,19 @@ const REACTIONS: { key: string; glyph: string }[] = [
 ];
 const glyph = (k: string) => REACTIONS.find((r) => r.key === k)?.glyph ?? k;
 
+// The live demo runs in one shared channel; the rest of the list is here so
+// the window reads like a real multi-channel workspace. Selecting a non-live
+// channel shows a short placeholder rather than pretending to be wired up.
+const CHANNELS = [
+  { key: "general", name: "general", live: true },
+  { key: "random", name: "random", live: false },
+  { key: "introductions", name: "introductions", live: false },
+  { key: "announcements", name: "announcements", live: false },
+  { key: "help", name: "help", live: false },
+  { key: "showcase", name: "showcase", live: false },
+];
+
+type Status = "sending" | "delivered" | "read";
 type Reaction = { reaction: string; user_id: string };
 type Message = {
   message_id: string;
@@ -30,10 +48,61 @@ type Message = {
   edited_at?: string | null;
   reaction_counts: Record<string, number>;
   latest_reactions: Reaction[];
+  cid?: string; // client id for optimistic sends, before the server echoes back
+  pending?: boolean; // true while the POST is in flight
 };
 type Session = { token: string; userId: string; displayName: string; channelId: string };
 
 const uuid = () => crypto.randomUUID();
+
+// Stable per-name hue so each participant keeps the same avatar colour, the
+// same treatment the hero mockup uses.
+function hueFor(seed: string): number {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 360;
+  return h;
+}
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+function timeOf(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toLowerCase();
+}
+
+function Avatar({ name, size = 28 }: { name: string; size?: number }) {
+  const hue = hueFor(name || "?");
+  return (
+    <span
+      className="grid shrink-0 select-none place-items-center rounded-full font-semibold text-white"
+      style={{
+        width: size,
+        height: size,
+        fontSize: size * 0.4,
+        background: `linear-gradient(135deg, hsl(${hue} 70% 55%), hsl(${(hue + 30) % 360} 65% 42%))`,
+      }}
+      aria-hidden="true"
+    >
+      {initials(name)}
+    </span>
+  );
+}
+
+function Ticks({ status }: { status: Status }) {
+  if (status === "sending") {
+    return <Check className="h-3 w-3 text-text-faint" strokeWidth={2.5} />;
+  }
+  return (
+    <CheckCheck
+      className={`h-3 w-3 transition-colors duration-300 ${status === "read" ? "text-accent" : "text-text-faint"}`}
+      strokeWidth={2.5}
+    />
+  );
+}
 
 export default function DemoChat() {
   const [session, setSession] = useState<Session | null>(null);
@@ -43,16 +112,19 @@ export default function DemoChat() {
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [names, setNames] = useState<Record<string, string>>({});
+  const [reads, setReads] = useState<Record<string, number>>({}); // userId -> last read sequence
   const [typing, setTyping] = useState<Record<string, boolean>>({});
   const [status, setStatus] = useState<"connecting" | "open" | "closed">("connecting");
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState<{ id: string; body: string } | null>(null);
+  const [active, setActive] = useState("general");
 
   const wsRef = useRef<WebSocket | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const typingSentAt = useRef(0);
   const typingStopTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingClear = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const markReadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const authed = useCallback(
     (path: string, init: RequestInit = {}) =>
@@ -67,25 +139,36 @@ export default function DemoChat() {
     [session],
   );
 
-  const loadMembers = useCallback(
-    async (s: Session) => {
-      try {
-        const r = await fetch(`${API}/channels/${s.channelId}/members`, {
-          headers: { authorization: `Bearer ${s.token}` },
-        });
-        if (!r.ok) return;
-        const members: { user_id: string; display_name: string }[] = await r.json();
-        setNames((prev) => {
-          const next = { ...prev };
-          for (const m of members) next[m.user_id] = m.display_name;
-          return next;
-        });
-      } catch {
-        /* names just fall back to "Someone" */
-      }
-    },
-    [],
-  );
+  const loadMembers = useCallback(async (s: Session) => {
+    try {
+      const r = await fetch(`${API}/channels/${s.channelId}/members`, {
+        headers: { authorization: `Bearer ${s.token}` },
+      });
+      if (!r.ok) return;
+      const members: { user_id: string; display_name: string }[] = await r.json();
+      setNames((prev) => {
+        const next = { ...prev };
+        for (const m of members) next[m.user_id] = m.display_name;
+        return next;
+      });
+    } catch {
+      /* names just fall back to "Someone" */
+    }
+  }, []);
+
+  // Advance our own read watermark so other participants see our ticks turn
+  // green. Best-effort: if the app doesn't have read events enabled this 4xxs
+  // and we simply don't show read receipts. Debounced to once per burst.
+  const markRead = useCallback(() => {
+    if (!session) return;
+    if (markReadTimer.current) clearTimeout(markReadTimer.current);
+    markReadTimer.current = setTimeout(() => {
+      authed(`/channels/${session.channelId}/read`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      }).catch(() => {});
+    }, 600);
+  }, [authed, session]);
 
   async function join() {
     const name = username.trim();
@@ -102,6 +185,7 @@ export default function DemoChat() {
       if (!r.ok) throw new Error(data.error || "could not join");
       const s: Session = data;
       setSession(s);
+      setActive("general");
       setNames((p) => ({ ...p, [s.userId]: s.displayName }));
       // recent history
       const hist = await fetch(`${API}/channels/${s.channelId}/messages?limit=40`, {
@@ -109,6 +193,18 @@ export default function DemoChat() {
       });
       if (hist.ok) setMessages(((await hist.json()) as Message[]).slice().reverse());
       await loadMembers(s);
+      // seed read watermarks so historical ticks are accurate
+      try {
+        const rs = await fetch(`${API}/channels/${s.channelId}/read-state`, {
+          headers: { authorization: `Bearer ${s.token}` },
+        });
+        if (rs.ok) {
+          const rows: { user_id: string; last_read_sequence: number }[] = await rs.json();
+          setReads(Object.fromEntries(rows.map((row) => [row.user_id, row.last_read_sequence])));
+        }
+      } catch {
+        /* ticks just stay "delivered" */
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "could not join");
     } finally {
@@ -145,20 +241,42 @@ export default function DemoChat() {
           reaction_counts: {},
           latest_reactions: [],
         };
-        setMessages((prev) => (prev.some((x) => x.message_id === m.message_id) ? prev : [...prev, m]));
-        if (!(f.sender_id as string in names)) loadMembers(session);
+        setMessages((prev) => {
+          if (prev.some((x) => x.message_id === m.message_id)) return prev;
+          // Reconcile with our own optimistic bubble if it's still pending.
+          const idx = prev.findIndex((x) => x.pending && x.sender_id === m.sender_id && x.body === m.body);
+          if (idx >= 0) {
+            const copy = [...prev];
+            copy[idx] = { ...m };
+            return copy;
+          }
+          return [...prev, m];
+        });
+        if (!((f.sender_id as string) in names)) loadMembers(session);
+        if (f.sender_id !== session.userId) markRead();
       } else if (type === "message.edited") {
         setMessages((prev) =>
-          prev.map((m) => (m.message_id === f.message_id ? { ...m, body: f.body as string, edited_at: f.edited_at as string } : m)),
+          prev.map((m) =>
+            m.message_id === f.message_id ? { ...m, body: f.body as string, edited_at: f.edited_at as string } : m,
+          ),
         );
       } else if (type === "reaction.updated") {
         setMessages((prev) =>
           prev.map((m) =>
             m.message_id === f.message_id
-              ? { ...m, reaction_counts: f.reaction_counts as Record<string, number>, latest_reactions: (f.latest_reactions as Reaction[]) || [] }
+              ? {
+                  ...m,
+                  reaction_counts: f.reaction_counts as Record<string, number>,
+                  latest_reactions: (f.latest_reactions as Reaction[]) || [],
+                }
               : m,
           ),
         );
+      } else if (type === "read.updated") {
+        const uid = f.user_id as string;
+        const seq = (f.last_read_sequence as number) || 0;
+        setReads((prev) => (prev[uid] >= seq ? prev : { ...prev, [uid]: seq }));
+        if (!(uid in names)) loadMembers(session);
       } else if (type === "typing.updated") {
         const uid = f.user_id as string;
         if (uid === session.userId) return;
@@ -176,9 +294,11 @@ export default function DemoChat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
-  // autoscroll
+  // autoscroll + mark the newest messages read
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
+    if (session && messages.length) markRead();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, typing]);
 
   function sendTyping(start: boolean) {
@@ -202,10 +322,37 @@ export default function DemoChat() {
     if (!body || !session) return;
     setDraft("");
     sendTyping(false);
-    await authed(`/channels/${session.channelId}/messages`, {
-      method: "POST",
-      body: JSON.stringify({ client_message_id: uuid(), body }),
-    });
+    const cid = uuid();
+    // Optimistic bubble so the sender sees sending → delivered ticks advance.
+    const temp: Message = {
+      message_id: `tmp-${cid}`,
+      cid,
+      pending: true,
+      sender_id: session.userId,
+      body,
+      created_at: new Date().toISOString(),
+      sequence: Number.MAX_SAFE_INTEGER,
+      reaction_counts: {},
+      latest_reactions: [],
+    };
+    setMessages((prev) => [...prev, temp]);
+    try {
+      const r = await authed(`/channels/${session.channelId}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ client_message_id: cid, body }),
+      });
+      const created: Message = await r.json();
+      setMessages((prev) => {
+        // The WS echo may have already replaced the temp; if so, drop the temp.
+        if (prev.some((x) => x.message_id === created.message_id)) {
+          return prev.filter((x) => x.cid !== cid);
+        }
+        return prev.map((x) => (x.cid === cid ? { ...created, reaction_counts: {}, latest_reactions: [] } : x));
+      });
+    } catch {
+      setMessages((prev) => prev.filter((x) => x.cid !== cid));
+      setDraft(body);
+    }
   }
 
   async function saveEdit() {
@@ -223,26 +370,43 @@ export default function DemoChat() {
     return m.latest_reactions?.some((r) => r.reaction === key && r.user_id === session?.userId);
   }
   async function toggleReaction(m: Message, key: string) {
-    if (!session) return;
+    if (!session || m.pending) return;
     const on = myReacted(m, key);
-    await authed(`/channels/${session.channelId}/messages/${m.message_id}/reactions${on ? "/" + key : ""}`, {
-      method: on ? "DELETE" : "POST",
-      body: on ? undefined : JSON.stringify({ reaction: key }),
-    });
+    await authed(
+      `/channels/${session.channelId}/messages/${m.message_id}/reactions${on ? "/" + key : ""}`,
+      {
+        method: on ? "DELETE" : "POST",
+        body: on ? undefined : JSON.stringify({ reaction: key }),
+      },
+    );
   }
+
+  // A message of ours counts as "read" once anyone else's watermark reaches it.
+  const statusOf = useCallback(
+    (m: Message): Status => {
+      if (m.pending) return "sending";
+      const seenByOther = Object.entries(reads).some(
+        ([uid, seq]) => uid !== session?.userId && seq >= m.sequence,
+      );
+      return seenByOther ? "read" : "delivered";
+    },
+    [reads, session],
+  );
 
   const typers = Object.keys(typing)
     .filter((u) => typing[u])
     .map((u) => names[u] || "Someone");
 
+  const memberCount = useMemo(() => Object.keys(names).length || 1, [names]);
+
   // ---- join screen ----
   if (!session) {
     return (
-      <div className="mx-auto w-full max-w-md rounded-2xl border border-white/10 bg-neutral-900 p-6 text-neutral-100 shadow-2xl">
+      <div className="mx-auto w-full max-w-md rounded-2xl border border-border bg-surface p-6 text-text shadow-2xl">
         <h3 className="text-lg font-semibold">Try the live chat</h3>
-        <p className="mt-1 text-sm text-neutral-400">
-          Pick a name and join the shared Lobby. Send messages, react, edit, and watch typing
-          indicators in real time — running on the actual platform.
+        <p className="mt-1 text-sm text-text-muted">
+          Pick a name and join the shared workspace. Send messages, react, edit, and watch typing
+          indicators and read receipts in real time — running on the actual platform.
         </p>
         <div className="mt-4 flex gap-2">
           <input
@@ -251,120 +415,286 @@ export default function DemoChat() {
             onKeyDown={(e) => e.key === "Enter" && join()}
             placeholder="your name"
             maxLength={40}
-            className="flex-1 rounded-lg border border-white/10 bg-neutral-800 px-3 py-2 text-sm outline-none focus:border-white/30"
+            className="flex-1 rounded-lg border border-border bg-bg px-3 py-2 text-sm text-text outline-none focus:border-accent"
           />
           <button
             onClick={join}
             disabled={joining || !username.trim()}
-            className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-neutral-900 disabled:opacity-50"
+            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-bg disabled:opacity-50"
           >
             {joining ? "Joining…" : "Join"}
           </button>
         </div>
-        {error && <p className="mt-2 text-sm text-red-400">{error}</p>}
+        {error && <p className="mt-2 text-sm text-danger">{error}</p>}
       </div>
     );
   }
 
+  const activeChannel = CHANNELS.find((c) => c.key === active) ?? CHANNELS[0];
+
   // ---- chat screen ----
   return (
-    <div className="mx-auto flex h-[32rem] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-white/10 bg-neutral-900 text-neutral-100 shadow-2xl">
-      <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-        <div>
-          <div className="text-sm font-semibold">Lobby</div>
-          <div className="text-xs text-neutral-400">
-            you are <span className="text-neutral-200">{session.displayName}</span> ·{" "}
-            <span className={status === "open" ? "text-emerald-400" : "text-neutral-500"}>
+    <div className="mx-auto flex h-[34rem] w-full max-w-4xl overflow-hidden rounded-[22px] border border-border bg-surface text-text shadow-2xl">
+      {/* Sidebar */}
+      <aside className="hidden w-56 shrink-0 flex-col border-r border-border-soft bg-bg/40 sm:flex">
+        <div className="flex items-center gap-2.5 border-b border-border-soft px-4 py-3.5">
+          <Avatar name="Demo Workspace" size={30} />
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold">Demo Workspace</div>
+            <div className="flex items-center gap-1.5 text-[11px] text-text-muted">
+              <span className={`h-1.5 w-1.5 rounded-full ${status === "open" ? "bg-accent" : "bg-text-faint"}`} />
               {status === "open" ? "live" : status}
-            </span>
+            </div>
           </div>
         </div>
-        <button onClick={() => setSession(null)} className="text-xs text-neutral-400 hover:text-neutral-200">
-          leave
-        </button>
-      </div>
+        <nav className="flex-1 overflow-y-auto px-2 py-3">
+          <div className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-faint">
+            Channels
+          </div>
+          {CHANNELS.map((c) => {
+            const on = c.key === active;
+            return (
+              <button
+                key={c.key}
+                onClick={() => setActive(c.key)}
+                className={`group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm ${
+                  on ? "bg-accent-soft text-text" : "text-text-muted hover:bg-surface-2 hover:text-text"
+                }`}
+              >
+                <Hash className={`h-3.5 w-3.5 ${on ? "text-accent" : "text-text-faint"}`} />
+                <span className="truncate">{c.name}</span>
+                {c.live && (
+                  <span className="ml-auto h-1.5 w-1.5 rounded-full bg-accent" title="live demo channel" />
+                )}
+              </button>
+            );
+          })}
+        </nav>
+        <div className="flex items-center gap-2 border-t border-border-soft px-3 py-3">
+          <Avatar name={session.displayName} size={28} />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-xs font-medium text-text">{session.displayName}</div>
+            <div className="text-[10px] text-text-faint">you</div>
+          </div>
+          <button
+            onClick={() => setSession(null)}
+            className="rounded px-1.5 py-1 text-[11px] text-text-faint hover:text-text"
+          >
+            leave
+          </button>
+        </div>
+      </aside>
 
-      <div ref={listRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
-        {messages.length === 0 && <p className="text-sm text-neutral-500">No messages yet — say hi 👋</p>}
-        {messages.map((m) => {
-          const mine = m.sender_id === session.userId;
-          return (
-            <div key={m.message_id} className="group">
-              <div className="flex items-baseline gap-2">
-                <span className="text-xs font-medium text-neutral-300">{names[m.sender_id] || "Someone"}</span>
-                {m.edited_at && <span className="text-[10px] text-neutral-500">(edited)</span>}
-              </div>
-              {editing?.id === m.message_id ? (
-                <div className="mt-1 flex gap-2">
-                  <input
-                    value={editing.body}
-                    onChange={(e) => setEditing({ id: m.message_id, body: e.target.value })}
-                    onKeyDown={(e) => e.key === "Enter" && saveEdit()}
-                    className="flex-1 rounded border border-white/10 bg-neutral-800 px-2 py-1 text-sm outline-none"
-                    autoFocus
-                  />
-                  <button onClick={saveEdit} className="text-xs text-emerald-400">save</button>
-                  <button onClick={() => setEditing(null)} className="text-xs text-neutral-500">cancel</button>
-                </div>
-              ) : (
-                <div className="text-sm text-neutral-100">{m.body}</div>
-              )}
-
-              <div className="mt-1 flex flex-wrap items-center gap-1">
-                {Object.entries(m.reaction_counts || {})
-                  .filter(([, c]) => c > 0)
-                  .map(([k, c]) => (
-                    <button
-                      key={k}
-                      onClick={() => toggleReaction(m, k)}
-                      className={`rounded-full border px-1.5 py-0.5 text-xs ${
-                        myReacted(m, k) ? "border-emerald-500/50 bg-emerald-500/10" : "border-white/10 bg-neutral-800"
-                      }`}
-                    >
-                      {glyph(k)} {c}
-                    </button>
-                  ))}
-                <div className="ml-1 hidden gap-0.5 group-hover:flex">
-                  {REACTIONS.map((r) => (
-                    <button
-                      key={r.key}
-                      onClick={() => toggleReaction(m, r.key)}
-                      title={r.key}
-                      className="rounded px-1 text-xs opacity-70 hover:opacity-100"
-                    >
-                      {r.glyph}
-                    </button>
-                  ))}
-                  {mine && editing?.id !== m.message_id && (
-                    <button
-                      onClick={() => setEditing({ id: m.message_id, body: m.body })}
-                      className="ml-1 rounded px-1 text-[11px] text-neutral-400 hover:text-neutral-200"
-                    >
-                      edit
-                    </button>
-                  )}
-                </div>
-              </div>
+      {/* Chat pane */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex items-center gap-2 border-b border-border-soft px-4 py-3.5">
+          <Hash className="h-4 w-4 text-text-faint" />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-semibold">{activeChannel.name}</div>
+            <div className="flex items-center gap-1.5 text-[11px] text-text-muted">
+              <span className={`h-1.5 w-1.5 rounded-full ${status === "open" ? "bg-accent" : "bg-text-faint"}`} />
+              {memberCount} {memberCount === 1 ? "member" : "members"}
+              {status === "open" ? " · live" : ` · ${status}`}
             </div>
-          );
-        })}
-      </div>
+          </div>
+          <button
+            onClick={() => setSession(null)}
+            className="text-xs text-text-faint hover:text-text sm:hidden"
+          >
+            leave
+          </button>
+        </div>
 
-      <div className="h-5 px-4 text-xs text-neutral-500">
-        {typers.length > 0 && `${typers.slice(0, 3).join(", ")} ${typers.length === 1 ? "is" : "are"} typing…`}
-      </div>
+        {!activeChannel.live ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
+            <div className="grid h-12 w-12 place-items-center rounded-full bg-surface-2 text-text-faint">
+              <Hash className="h-5 w-5" />
+            </div>
+            <p className="text-sm text-text-muted">
+              <span className="font-medium text-text">#{activeChannel.name}</span> is part of the full
+              workspace. The live demo runs in{" "}
+              <button onClick={() => setActive("general")} className="font-medium text-accent hover:underline">
+                #general
+              </button>
+              — jump back in to keep chatting.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div ref={listRef} className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-5">
+              {messages.length === 0 && (
+                <p className="m-auto text-sm text-text-faint">No messages yet — say hi 👋</p>
+              )}
+              {messages.map((m) => {
+                const mine = m.sender_id === session.userId;
+                const editable = mine && !m.pending && editing?.id !== m.message_id;
+                const reactionPills = Object.entries(m.reaction_counts || {}).filter(([, c]) => c > 0);
 
-      <div className="flex gap-2 border-t border-white/10 p-3">
-        <input
-          value={draft}
-          onChange={(e) => onDraftChange(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
-          placeholder="Message the Lobby…"
-          className="flex-1 rounded-lg border border-white/10 bg-neutral-800 px-3 py-2 text-sm outline-none focus:border-white/30"
-        />
-        <button onClick={send} disabled={!draft.trim()} className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-neutral-900 disabled:opacity-50">
-          Send
-        </button>
+                if (mine) {
+                  return (
+                    <div key={m.message_id} className="group flex flex-col items-end">
+                      {editing?.id === m.message_id ? (
+                        <div className="flex w-full max-w-[80%] items-center gap-2">
+                          <input
+                            value={editing.body}
+                            onChange={(e) => setEditing({ id: m.message_id, body: e.target.value })}
+                            onKeyDown={(e) =>
+                              e.key === "Enter" ? saveEdit() : e.key === "Escape" ? setEditing(null) : null
+                            }
+                            className="flex-1 rounded-lg border border-border bg-bg px-2.5 py-1.5 text-[13px] text-text outline-none focus:border-accent"
+                            autoFocus
+                          />
+                          <button onClick={saveEdit} className="text-xs text-accent">save</button>
+                          <button onClick={() => setEditing(null)} className="text-xs text-text-faint">cancel</button>
+                        </div>
+                      ) : (
+                        <div className="max-w-[80%] rounded-2xl rounded-br-md bg-accent px-3.5 py-2 text-[13px] leading-snug text-bg">
+                          {m.body}
+                        </div>
+                      )}
+                      <div className="mt-1 flex items-center gap-1.5 pr-1 text-[10px] text-text-faint">
+                        {editable && (
+                          <button
+                            onClick={() => setEditing({ id: m.message_id, body: m.body })}
+                            className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-text"
+                          >
+                            edit
+                          </button>
+                        )}
+                        {m.edited_at && <span>edited</span>}
+                        <span>{timeOf(m.created_at)}</span>
+                        <Ticks status={statusOf(m)} />
+                      </div>
+                      {reactionPills.length > 0 && (
+                        <div className="mt-1 flex flex-wrap justify-end gap-1">
+                          {reactionPills.map(([k, c]) => (
+                            <button
+                              key={k}
+                              onClick={() => toggleReaction(m, k)}
+                              className={`rounded-full border px-1.5 py-0.5 text-[11px] ${
+                                myReacted(m, k)
+                                  ? "border-accent/50 bg-accent-soft text-text"
+                                  : "border-border bg-bg text-text-muted"
+                              }`}
+                            >
+                              {glyph(k)} {c}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <div className="mt-0.5 hidden gap-0.5 group-hover:flex">
+                        {REACTIONS.map((r) => (
+                          <button
+                            key={r.key}
+                            onClick={() => toggleReaction(m, r.key)}
+                            title={r.key}
+                            className="rounded px-1 text-xs opacity-70 hover:opacity-100"
+                          >
+                            {r.glyph}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div key={m.message_id} className="group flex items-end gap-2">
+                    <Avatar name={names[m.sender_id] || "Someone"} />
+                    <div className="flex max-w-[80%] flex-col items-start">
+                      <span
+                        className="mb-1 pl-1 text-[11px] font-medium"
+                        style={{ color: `hsl(${hueFor(names[m.sender_id] || m.sender_id)} 60% 62%)` }}
+                      >
+                        {names[m.sender_id] || "Someone"}
+                      </span>
+                      <div className="rounded-2xl rounded-bl-md bg-surface-2 px-3.5 py-2 text-[13px] leading-snug text-text">
+                        {m.body}
+                      </div>
+                      <div className="mt-1 flex items-center gap-1.5 pl-1">
+                        {reactionPills.length > 0 && (
+                          <span className="inline-flex items-center gap-1">
+                            {reactionPills.map(([k, c]) => (
+                              <button
+                                key={k}
+                                onClick={() => toggleReaction(m, k)}
+                                className={`inline-flex items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[11px] ${
+                                  myReacted(m, k)
+                                    ? "border-accent/50 bg-accent-soft text-text"
+                                    : "border-border bg-bg text-text-muted"
+                                }`}
+                              >
+                                <span className="text-[12px] leading-none">{glyph(k)}</span> {c}
+                              </button>
+                            ))}
+                          </span>
+                        )}
+                        {m.edited_at && <span className="text-[10px] text-text-faint">edited</span>}
+                        <span className="text-[10px] text-text-faint">{timeOf(m.created_at)}</span>
+                      </div>
+                    </div>
+                    <div className="mb-5 hidden gap-0.5 self-center group-hover:flex">
+                      {REACTIONS.map((r) => (
+                        <button
+                          key={r.key}
+                          onClick={() => toggleReaction(m, r.key)}
+                          title={r.key}
+                          className="rounded px-1 text-xs opacity-70 hover:opacity-100"
+                        >
+                          {r.glyph}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {typers.length > 0 && (
+                <div className="flex items-center gap-2">
+                  <Avatar name={typers[0]} />
+                  <div className="flex items-center gap-1 rounded-2xl rounded-bl-md bg-surface-2 px-3.5 py-2.5">
+                    <span className="chat-typing-dot h-1.5 w-1.5 rounded-full bg-text-faint" style={{ animationDelay: "0ms" }} />
+                    <span className="chat-typing-dot h-1.5 w-1.5 rounded-full bg-text-faint" style={{ animationDelay: "150ms" }} />
+                    <span className="chat-typing-dot h-1.5 w-1.5 rounded-full bg-text-faint" style={{ animationDelay: "300ms" }} />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="h-4 px-4 text-[11px] text-text-faint">
+              {typers.length > 0 &&
+                `${typers.slice(0, 3).join(", ")} ${typers.length === 1 ? "is" : "are"} typing…`}
+            </div>
+
+            <div className="flex items-center gap-2 border-t border-border-soft px-3 py-3">
+              <button
+                type="button"
+                aria-label="Add"
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-text-muted hover:text-text"
+              >
+                <Plus className="h-[18px] w-[18px]" />
+              </button>
+              <div className="flex flex-1 items-center gap-2 rounded-full border border-border bg-bg px-3.5 py-2 focus-within:border-accent">
+                <input
+                  value={draft}
+                  onChange={(e) => onDraftChange(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && send()}
+                  placeholder={`Message #${activeChannel.name}`}
+                  className="flex-1 bg-transparent text-[13px] text-text outline-none placeholder:text-text-faint"
+                />
+                <Smile className="h-[17px] w-[17px] shrink-0 text-text-faint" />
+              </div>
+              <button
+                onClick={send}
+                disabled={!draft.trim()}
+                aria-label="Send"
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent text-bg disabled:opacity-40"
+              >
+                <SendHorizontal className="h-[17px] w-[17px]" />
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
