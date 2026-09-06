@@ -4,6 +4,16 @@ name = "chat-edge-router"
 main = "src/worker.js"
 compatibility_date = "2024-09-01"
 
+# Smart Placement: run the Worker next to the Railway origin (single region,
+# Amsterdam) instead of at the eyeball PoP, so the Worker->origin subrequests
+# ride Cloudflare's backbone rather than a public-internet hop from a distant
+# PoP. Targets the ~38-55ms edge->origin overhead measured in the in-region
+# probe. Free + reversible; Cloudflare learns optimal placement over some
+# traffic, so give it a little time before judging. The real Argo Smart Routing
+# equivalent needs a custom domain + paid add-on, layered on later.
+[placement]
+mode = "smart"
+
 # Placement map: apikey/appid -> {region, shard}. Create it once with
 #   wrangler kv namespace create PLACEMENT
 # and paste the returned id below. Populated by infra/cloudflare/sync-kv.sh or
