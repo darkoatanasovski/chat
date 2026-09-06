@@ -46,6 +46,8 @@ type appResponse struct {
 	EnabledCommands []string `json:"enabled_commands"`
 	// DynamicPartitioning: see apps.App.DynamicPartitioning.
 	DynamicPartitioning bool `json:"dynamic_partitioning"`
+	// RetentionDays: message retention in days; 0 = forever.
+	RetentionDays int `json:"retention_days"`
 }
 
 func appResponseFrom(app apps.App) appResponse {
@@ -61,6 +63,7 @@ func appResponseFrom(app apps.App) appResponse {
 		MaxMessageLength:    app.MaxMessageLength,
 		EnabledCommands:     app.EnabledCommands,
 		DynamicPartitioning: app.DynamicPartitioning,
+		RetentionDays:       app.RetentionDays,
 	}
 }
 
@@ -207,6 +210,8 @@ type updateAppRequest struct {
 	MaxMessageLength    *int            `json:"max_message_length"`
 	EnabledCommands     *[]string       `json:"enabled_commands"`
 	DynamicPartitioning *bool           `json:"dynamic_partitioning"`
+	// RetentionDays: how long messages are kept (days); 0 = forever.
+	RetentionDays *int `json:"retention_days"`
 }
 
 // handleUpdateApp backs PATCH /apps/{app_id}. Whichever of
@@ -228,7 +233,8 @@ func (a *App) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.MaxThreadDepth == nil && req.MessageEditEnabled == nil && req.ChannelCapabilities == nil &&
-		req.MaxMessageLength == nil && req.EnabledCommands == nil && req.DynamicPartitioning == nil {
+		req.MaxMessageLength == nil && req.EnabledCommands == nil && req.DynamicPartitioning == nil &&
+		req.RetentionDays == nil {
 		writeError(w, http.StatusBadRequest, "at least one setting is required")
 		return
 	}
@@ -238,6 +244,10 @@ func (a *App) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.MaxMessageLength != nil && *req.MaxMessageLength <= 0 {
 		writeError(w, http.StatusBadRequest, "max_message_length must be > 0")
+		return
+	}
+	if req.RetentionDays != nil && *req.RetentionDays < 0 {
+		writeError(w, http.StatusBadRequest, "retention_days must be >= 0 (0 means keep forever)")
 		return
 	}
 
@@ -252,7 +262,7 @@ func (a *App) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updated, err := a.appsRepo.UpdateSettings(r.Context(), app.AppID, req.MaxThreadDepth, req.MessageEditEnabled,
-		mergedCapabilities, req.MaxMessageLength, req.EnabledCommands, req.DynamicPartitioning)
+		mergedCapabilities, req.MaxMessageLength, req.EnabledCommands, req.DynamicPartitioning, req.RetentionDays)
 	if err != nil {
 		if errors.Is(err, apps.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "app not found")

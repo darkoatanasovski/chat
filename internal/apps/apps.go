@@ -145,20 +145,25 @@ type App struct {
 	// DynamicPartitioning: stored and dashboard-visible; does not change
 	// routing behavior today — see the migration's doc comment for why.
 	DynamicPartitioning bool
+	// RetentionDays is how long this app's messages are kept before the
+	// worker's retention sweep deletes them (migrations/config/0002). Per-app,
+	// owner-configurable via PATCH /apps; defaults to 730 (2 years); 0 or
+	// negative means keep forever.
+	RetentionDays int
 }
 
 // appColumns/scanApp are shared by every query below that returns a full
 // App row, so the "5 plain columns + 1 jsonb column that needs unmarshaling
 // afterward" shape only has to be written once.
 const appColumns = `app_id, org_id, name, created_at, region, shard, max_thread_depth, message_edit_enabled,
-		channel_capabilities, max_message_length, enabled_commands, dynamic_partitioning`
+		channel_capabilities, max_message_length, enabled_commands, dynamic_partitioning, retention_days`
 
 func scanApp(row pgx.Row) (App, error) {
 	var a App
 	var capsRaw []byte
 	var region, shard *string
 	if err := row.Scan(&a.AppID, &a.OrgID, &a.Name, &a.CreatedAt, &region, &shard, &a.MaxThreadDepth, &a.MessageEditEnabled,
-		&capsRaw, &a.MaxMessageLength, &a.EnabledCommands, &a.DynamicPartitioning); err != nil {
+		&capsRaw, &a.MaxMessageLength, &a.EnabledCommands, &a.DynamicPartitioning, &a.RetentionDays); err != nil {
 		return App{}, err
 	}
 	if region != nil {
@@ -254,6 +259,7 @@ func (r *Repo) UpdateSettings(
 	maxMessageLength *int,
 	enabledCommands *[]string,
 	dynamicPartitioning *bool,
+	retentionDays *int,
 ) (App, error) {
 	var capsJSON []byte
 	if capabilities != nil {
@@ -271,10 +277,11 @@ func (r *Repo) UpdateSettings(
 			channel_capabilities = COALESCE($3::jsonb, channel_capabilities),
 			max_message_length = COALESCE($4, max_message_length),
 			enabled_commands = COALESCE($5, enabled_commands),
-			dynamic_partitioning = COALESCE($6, dynamic_partitioning)
-		WHERE app_id = $7
+			dynamic_partitioning = COALESCE($6, dynamic_partitioning),
+			retention_days = COALESCE($7, retention_days)
+		WHERE app_id = $8
 		RETURNING `+appColumns+`
-	`, maxThreadDepth, messageEditEnabled, nullableJSON(capsJSON), maxMessageLength, enabledCommands, dynamicPartitioning, appID))
+	`, maxThreadDepth, messageEditEnabled, nullableJSON(capsJSON), maxMessageLength, enabledCommands, dynamicPartitioning, retentionDays, appID))
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return App{}, ErrNotFound
@@ -282,6 +289,20 @@ func (r *Repo) UpdateSettings(
 		return App{}, fmt.Errorf("apps: update settings: %w", err)
 	}
 	return a, nil
+}
+
+// RetentionDaysForApp returns an app's message-retention setting in days
+// (0 = forever). Used by the worker's retention sweep — a single small column
+// read, not the full app row.
+func (r *Repo) RetentionDaysForApp(ctx context.Context, appID int64) (int, error) {
+	var days int
+	if err := r.pool.QueryRow(ctx, `SELECT retention_days FROM apps WHERE app_id = $1`, appID).Scan(&days); err != nil {
+		if err == pgx.ErrNoRows {
+			return 0, ErrNotFound
+		}
+		return 0, fmt.Errorf("apps: retention days: %w", err)
+	}
+	return days, nil
 }
 
 // nullableJSON turns a zero-length/nil marshal result into a real SQL NULL

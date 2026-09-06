@@ -1,9 +1,9 @@
-// Message retention: each organization's tier caps how long its messages
-// live (quota.TierLimits.RetentionDays, configured in deploy/tiers.yaml —
-// e.g. FREE keeps a week, ENTERPRISE keeps forever). Enforcing that is a
-// background job, not something the send/read path ever checks, so it runs
-// here in cmd/worker alongside the outbox publisher: one Sweeper per cell,
-// walking every channel in the cell (docs/adr/0006-cell-based-tenant-routing.md).
+// Message retention: each app sets how long its messages live
+// (apps.retention_days, migrations/config/0002 — default 730 days / 2 years;
+// 0 means keep forever). Enforcing that is a background job, not something the
+// send/read path ever checks, so it runs here in cmd/worker alongside the
+// outbox publisher: one Sweeper per cell, walking every channel in the cell
+// (docs/adr/0006-cell-based-tenant-routing.md).
 package worker
 
 import (
@@ -20,7 +20,6 @@ import (
 	"github.com/darkoatanasovski/chat/internal/messages"
 	"github.com/darkoatanasovski/chat/internal/platform/config"
 	"github.com/darkoatanasovski/chat/internal/platform/metrics"
-	"github.com/darkoatanasovski/chat/internal/quota"
 	pgstorage "github.com/darkoatanasovski/chat/internal/storage/postgres"
 )
 
@@ -38,18 +37,15 @@ type Sweeper struct {
 	m   *metrics.Metrics
 
 	channelsRepo *channels.Repo
-	appTiers     *apps.TierResolver
+	appsRepo     *apps.Repo
 	messagesRepo *messages.Repo
 	cellPool     *pgxpool.Pool
-
-	tiers map[string]quota.TierLimits
 }
 
-func NewSweeper(log *slog.Logger, m *metrics.Metrics, channelsRepo *channels.Repo, appTiers *apps.TierResolver, messagesRepo *messages.Repo, cellPool *pgxpool.Pool, tiers map[string]quota.TierLimits) *Sweeper {
+func NewSweeper(log *slog.Logger, m *metrics.Metrics, channelsRepo *channels.Repo, appsRepo *apps.Repo, messagesRepo *messages.Repo, cellPool *pgxpool.Pool) *Sweeper {
 	return &Sweeper{
 		log: log, m: m,
-		channelsRepo: channelsRepo, appTiers: appTiers, messagesRepo: messagesRepo, cellPool: cellPool,
-		tiers: tiers,
+		channelsRepo: channelsRepo, appsRepo: appsRepo, messagesRepo: messagesRepo, cellPool: cellPool,
 	}
 }
 
@@ -73,6 +69,8 @@ func (s *Sweeper) Run(ctx context.Context, interval time.Duration) {
 
 func (s *Sweeper) sweepOnce(ctx context.Context) {
 	after := uuid.Nil
+	// Per-sweep memo so each app's retention setting is read once, not per channel.
+	retentionByApp := map[int64]int{}
 	for {
 		page, err := s.channelsRepo.ListForRetention(ctx, after, retentionPageSize)
 		if err != nil {
@@ -84,16 +82,19 @@ func (s *Sweeper) sweepOnce(ctx context.Context) {
 		}
 
 		for _, ch := range page {
-			tier, err := s.appTiers.TierForApp(ctx, ch.AppID)
-			if err != nil {
-				s.log.Warn("retention: resolve tier", "channel_id", ch.ChannelID, "app_id", ch.AppID, "error", err)
-				continue
+			days, ok := retentionByApp[ch.AppID]
+			if !ok {
+				days, err = s.appsRepo.RetentionDaysForApp(ctx, ch.AppID)
+				if err != nil {
+					s.log.Warn("retention: resolve app retention", "channel_id", ch.ChannelID, "app_id", ch.AppID, "error", err)
+					continue
+				}
+				retentionByApp[ch.AppID] = days
 			}
-			limits, ok := s.tiers[tier]
-			if !ok || limits.RetentionDays <= 0 {
-				continue
+			if days <= 0 {
+				continue // keep forever
 			}
-			cutoff := time.Now().UTC().AddDate(0, 0, -limits.RetentionDays)
+			cutoff := time.Now().UTC().AddDate(0, 0, -days)
 			deleted, err := s.messagesRepo.DeleteExpiredBefore(ctx, s.cellPool, ch.ChannelID, cutoff, retentionDeleteBatch)
 			if err != nil {
 				s.log.Error("retention: delete expired", "channel_id", ch.ChannelID, "error", err)
@@ -101,7 +102,7 @@ func (s *Sweeper) sweepOnce(ctx context.Context) {
 			}
 			if deleted > 0 {
 				s.m.MessagesExpiredTotal.Add(float64(deleted))
-				s.log.Info("retention: deleted expired messages", "channel_id", ch.ChannelID, "tier", tier, "deleted", deleted)
+				s.log.Info("retention: deleted expired messages", "channel_id", ch.ChannelID, "app_id", ch.AppID, "retention_days", days, "deleted", deleted)
 			}
 		}
 
@@ -113,29 +114,20 @@ func (s *Sweeper) sweepOnce(ctx context.Context) {
 }
 
 // startRetentionSweeper wires up and launches the Sweeper for this cell,
-// running until ctx is cancelled. Channels and messages both live in the
-// cell DB (cellPool); tier is resolved from the global config DB
-// (organizations/apps) via apps.TierResolver with no Redis client (nil is
-// explicitly supported — see its doc comment): a once-an-hour background
-// sweep has no need for that cache's speed, only Postgres as the source of
-// truth.
+// running until ctx is cancelled. Channels and messages both live in the cell
+// DB (cellPool); each app's retention_days is read from the global config DB
+// (apps table), memoized per sweep.
 func startRetentionSweeper(ctx context.Context, cfg config.Config, log *slog.Logger, m *metrics.Metrics, cellPool *pgxpool.Pool) error {
-	tiers, err := quota.LoadTiers(cfg.TiersConfigPath)
-	if err != nil {
-		return fmt.Errorf("load tiers config: %w", err)
-	}
-
 	configPool, err := pgstorage.Connect(ctx, cfg.ConfigDSN)
 	if err != nil {
 		return fmt.Errorf("connect config db: %w", err)
 	}
 
 	appsRepo := apps.NewRepo(configPool)
-	appTiers := apps.NewTierResolver(nil, appsRepo.TierSource)
 	channelsRepo := channels.NewRepo(cellPool)
 	messagesRepo := messages.NewRepo()
 
-	sweeper := NewSweeper(log, m, channelsRepo, appTiers, messagesRepo, cellPool, tiers)
+	sweeper := NewSweeper(log, m, channelsRepo, appsRepo, messagesRepo, cellPool)
 	go sweeper.Run(ctx, retentionSweepInterval)
 
 	log.Info("retention sweeper started", "shard", cfg.ShardID, "interval", retentionSweepInterval)

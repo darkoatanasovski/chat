@@ -59,6 +59,9 @@ func buildTestApp() (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := migrate.Apply(ctx, configPool, migrations.FS, "config", "apps", 424202, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+		return nil, err
+	}
 	cellPool, err := pgstorage.Connect(ctx, "postgres://chat:chat@localhost:5434/chat?sslmode=disable")
 	if err != nil {
 		return nil, err

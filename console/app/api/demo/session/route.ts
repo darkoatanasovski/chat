@@ -74,15 +74,19 @@ export async function POST(request: Request): Promise<Response> {
         headers: { authorization: `Bearer ${session.token}`, "content-type": "application/json" },
         body: JSON.stringify({ user_id: user.user_id }),
       });
-      // Ensure the demo app has url_enrichment on so posted links get a preview.
-      // Idempotent capability merge, run once per Worker instance.
+      // Ensure the demo app's settings: link previews, search, attachments on,
+      // and a short 1-day retention so the public Lobby stays fresh. Idempotent
+      // merge, run once per Worker instance.
       if (!enrichEnsured) {
         const appId = appIdFromToken(appTok.token);
         if (appId) {
           await fetch(`${control}/apps/${appId}`, {
             method: "PATCH",
             headers: { authorization: `Bearer ${session.token}`, "content-type": "application/json" },
-            body: JSON.stringify({ channel_capabilities: { url_enrichment: true, search: true } }),
+            body: JSON.stringify({
+              channel_capabilities: { url_enrichment: true, search: true, uploads: true },
+              retention_days: 1,
+            }),
           }).catch(() => {});
         }
         enrichEnsured = true;

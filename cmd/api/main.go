@@ -66,7 +66,13 @@ func Run() {
 	}
 
 	// Apply pending schema migrations on startup (advisory-locked, idempotent).
-	// The data-plane api owns its cell DB's schema; ws/worker never migrate.
+	// The data-plane api owns its cell DB's schema; ws/worker never migrate. It
+	// also applies the global config-DB migrations so its own reads (and the
+	// worker's) see the current schema regardless of deploy ordering.
+	if err := migrate.Apply(ctx, configPool, migrations.FS, "config", "apps", 424202, log); err != nil {
+		log.Error("apply config migrations", "error", err)
+		os.Exit(1)
+	}
 	if err := migrate.Apply(ctx, cellPool, migrations.FS, "cell", "messages", 424201, log); err != nil {
 		log.Error("apply cell migrations", "error", err)
 		os.Exit(1)
