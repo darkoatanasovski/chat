@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, CheckCheck, FileText, Hash, Paperclip, Pencil, Plus, SendHorizontal, Smile } from "lucide-react";
 
 // Live chat demo for the landing page. A visitor picks a username, the server
@@ -62,6 +62,7 @@ type Message = {
   link_preview?: LinkPreview | null;
   cid?: string; // client id for optimistic sends, before the server echoes back
   pending?: boolean; // true while the POST is in flight
+  k?: string; // stable render key for its whole lifecycle (optimistic → reconciled), so it never remounts/re-animates
 };
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
@@ -181,6 +182,35 @@ function AttachmentView({ a, mine }: { a: Attachment; mine: boolean }) {
       <span className="max-w-[12rem] truncate">{a.filename || "file"}</span>
     </a>
   );
+}
+
+// Render message text with any http(s) URLs turned into clickable links, so a
+// link stays reachable whether or not it has a preview card (or after the
+// preview is removed). Color is inherited so it reads on both bubble grounds.
+function linkify(text: string) {
+  const re = /(https?:\/\/[^\s<>"']+)/g;
+  const out: ReactNode[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    const url = m[0];
+    out.push(
+      <a
+        key={m.index}
+        href={url}
+        target="_blank"
+        rel="noreferrer"
+        onClick={(e) => e.stopPropagation()}
+        className="underline underline-offset-2 hover:opacity-80"
+      >
+        {url}
+      </a>,
+    );
+    last = m.index + url.length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
 }
 
 function LinkPreviewCard({ p, onRemove }: { p: LinkPreview; onRemove?: () => void }) {
@@ -411,14 +441,15 @@ export default function DemoChat() {
         };
         setMessages((prev) => {
           if (prev.some((x) => x.message_id === m.message_id)) return prev;
-          // Reconcile with our own optimistic bubble if it's still pending.
+          // Reconcile with our own optimistic bubble if it's still pending —
+          // keeping its stable render key so it doesn't remount/re-animate.
           const idx = prev.findIndex((x) => x.pending && x.sender_id === m.sender_id && x.body === m.body);
           if (idx >= 0) {
             const copy = [...prev];
-            copy[idx] = { ...m };
+            copy[idx] = { ...m, k: prev[idx].k };
             return copy;
           }
-          return [...prev, m];
+          return [...prev, { ...m, k: m.message_id }];
         });
         if (!((f.sender_id as string) in names)) loadMembers(session);
         if (f.sender_id !== session.userId) markRead();
@@ -517,6 +548,7 @@ export default function DemoChat() {
     const temp: Message = {
       message_id: `tmp-${cid}`,
       cid,
+      k: cid,
       pending: true,
       sender_id: session.userId,
       body: finalBody,
@@ -546,7 +578,7 @@ export default function DemoChat() {
         return prev.filter((x) => x.cid !== cid);
       }
       return prev.map((x) =>
-        x.cid === cid ? { ...created, reaction_counts: {}, latest_reactions: [] } : x,
+        x.cid === cid ? { ...created, k: x.k, reaction_counts: {}, latest_reactions: [] } : x,
       );
     });
   }
@@ -778,7 +810,7 @@ export default function DemoChat() {
 
                 if (mine) {
                   return (
-                    <div key={m.message_id} className="chat-item group flex flex-col items-end">
+                    <div key={m.k ?? m.message_id} className="chat-item group flex flex-col items-end">
                       {editing?.id === m.message_id ? (
                         <div className="flex w-full max-w-[80%] items-center gap-2">
                           <input
@@ -796,8 +828,8 @@ export default function DemoChat() {
                       ) : (
                         <>
                           {hasCaption(m) && (
-                            <div className="max-w-[80%] rounded-2xl rounded-br-md bg-accent px-3.5 py-2 text-[13px] leading-snug text-bg">
-                              {m.body}
+                            <div className="max-w-[80%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-accent px-3.5 py-2 text-[13px] leading-snug text-bg">
+                              {linkify(m.body)}
                             </div>
                           )}
                           {m.attachments?.map((a, i) => (
@@ -855,7 +887,7 @@ export default function DemoChat() {
                 }
 
                 return (
-                  <div key={m.message_id} className="chat-item group flex items-end gap-2">
+                  <div key={m.k ?? m.message_id} className="chat-item group flex items-end gap-2">
                     <Avatar name={names[m.sender_id] || "Someone"} />
                     <div className="flex max-w-[80%] flex-col items-start">
                       <span
@@ -865,8 +897,8 @@ export default function DemoChat() {
                         {names[m.sender_id] || "Someone"}
                       </span>
                       {hasCaption(m) && (
-                        <div className="rounded-2xl rounded-bl-md bg-surface-2 px-3.5 py-2 text-[13px] leading-snug text-text">
-                          {m.body}
+                        <div className="whitespace-pre-wrap break-words rounded-2xl rounded-bl-md bg-surface-2 px-3.5 py-2 text-[13px] leading-snug text-text">
+                          {linkify(m.body)}
                         </div>
                       )}
                       {m.attachments?.map((a, i) => (
