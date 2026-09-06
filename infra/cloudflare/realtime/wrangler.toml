@@ -5,6 +5,17 @@ name = "chat-realtime"
 main = "src/worker.js"
 compatibility_date = "2024-09-01"
 
+# API_ORIGIN: the cell api used to authorize WebSocket connects
+# (GET /channels/:id/access with the caller's user token). Single region today;
+# a multi-region setup would resolve this per-app like the edge router does.
+[vars]
+API_ORIGIN = "https://api-production-15fc.up.railway.app"
+
+# INTERNAL_KEY is a SECRET (set separately, not committed) that gates
+# POST /broadcast so only the origin ws service can publish. It must equal the
+# ws service's INTERNAL_AUTH_KEY:
+#   echo -n "<key>" | wrangler secret put INTERNAL_KEY
+
 # One Durable Object class: ChannelRoom (one instance per channel_id).
 [[durable_objects.bindings]]
 name = "CHANNEL"

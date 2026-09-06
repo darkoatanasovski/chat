@@ -26,8 +26,15 @@ type Delivery struct {
 	blocksFallback *blocks.Repo // used only on cache miss
 	registry       *Registry
 	publisher      *Publisher
+	edge           *EdgePublisher // optional additive edge-DO sink; nil = disabled
 	log            Logger
 }
+
+// SetEdge attaches an optional edge realtime publisher (nil-safe). When set,
+// every ToChannelMembers frame is also mirrored to the edge Durable Object
+// worker for the resolved recipients. Additive — the normal delivery path is
+// unaffected whether or not this is set.
+func (d *Delivery) SetEdge(e *EdgePublisher) { d.edge = e }
 
 // Logger is the minimal slog.Logger surface Delivery needs, so callers don't
 // have to import log/slog just to satisfy this field.
@@ -73,6 +80,7 @@ func (d *Delivery) ToChannelMembers(ctx context.Context, channelID uuid.UUID, fr
 	// connections — unlike V1, it can no longer assume "not local" means
 	// "not connected anywhere."
 	var remote []uuid.UUID
+	var recipients []uuid.UUID // every eligible member, for the edge-DO sink
 	for _, userID := range members {
 		if userID == exclude {
 			continue
@@ -80,12 +88,17 @@ func (d *Delivery) ToChannelMembers(ctx context.Context, channelID uuid.UUID, fr
 		if blockedWithActor[userID] {
 			continue
 		}
+		recipients = append(recipients, userID)
 		if d.hub.HasLocalUser(userID) {
 			d.hub.DeliverToUser(userID, frame)
 		} else {
 			remote = append(remote, userID)
 		}
 	}
+	// Mirror to the edge Durable Object transport (additive, best-effort). The
+	// DO delivers only to these recipients' sockets, so block/exclude filtering
+	// computed above is preserved at the edge.
+	d.edge.Publish(channelID, frame, recipients)
 	if len(remote) > 0 {
 		return d.deliverRemote(ctx, remote, frame)
 	}

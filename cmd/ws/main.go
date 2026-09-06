@@ -101,6 +101,13 @@ func Run() {
 	publisher := realtime.NewPublisher(redisClient, m)
 
 	delivery := realtime.NewDelivery(hub, cache, membershipRepo, blocksCache, blocksRepo, registry, publisher, log)
+	// Optional edge Durable Object transport: mirror delivered frames to the
+	// realtime worker so edge-connected clients get PoP-local fan-out. No-op
+	// unless EDGE_REALTIME_URL is set.
+	if cfg.EdgeRealtimeURL != "" {
+		delivery.SetEdge(realtime.NewEdgePublisher(cfg.EdgeRealtimeURL, cfg.InternalAuthKey, log))
+		log.Info("edge realtime transport enabled", "url", cfg.EdgeRealtimeURL)
+	}
 
 	consumerTopics := []string{
 		events.TopicMessageCreated, events.TopicReactionUpdated, events.TopicReadUpdated,

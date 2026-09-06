@@ -218,6 +218,35 @@ type memberResponse struct {
 // truth for "who's already in this channel" (as opposed to CountMembers,
 // which only the quota check needs). Membership-gated like every other read
 // on a channel's contents (INSTRUCTIONS.md §43).
+// handleChannelAccess backs GET /channels/{id}/access — a lightweight
+// membership check for the current bearer identity, used by the edge realtime
+// worker (infra/cloudflare/realtime) to authorize a WebSocket connect before
+// it terminates the socket at the edge. Auth is the caller's own user token
+// (requireAuth), so it needs no internal key: a user is only ever told whether
+// they themselves may join the channel. Returns 200 {user_id, member:true} for
+// a member, 403 for a non-member (so the worker can reject the socket).
+func (a *App) handleChannelAccess(w http.ResponseWriter, r *http.Request) {
+	identity, _ := identityFromContext(r.Context())
+
+	channelID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+
+	isMember, err := a.membershipRepo.IsMember(r.Context(), channelID, identity.UserID)
+	if err != nil {
+		a.log.Error("check membership", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to check membership")
+		return
+	}
+	if !isMember {
+		writeError(w, http.StatusForbidden, "not a member of this channel")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user_id": identity.UserID.String(), "member": true})
+}
+
 func (a *App) handleListMembers(w http.ResponseWriter, r *http.Request) {
 	identity, _ := identityFromContext(r.Context())
 

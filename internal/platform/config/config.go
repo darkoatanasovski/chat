@@ -56,6 +56,14 @@ type Config struct {
 	// edge router's read-through placement lookup). Empty = open (dev).
 	InternalAuthKey string
 
+	// EdgeRealtimeURL, when set (ws service only), makes the fanout also push
+	// every delivered frame to the edge Durable Object realtime worker
+	// (infra/cloudflare/realtime) at ${EdgeRealtimeURL}/broadcast, so clients
+	// on the edge transport get sub-100ms fan-out without the Amsterdam round
+	// trip. Additive to the normal ws delivery — empty = disabled. Authenticated
+	// to the DO worker with InternalAuthKey. See internal/realtime.EdgePublisher.
+	EdgeRealtimeURL string
+
 	// AppSecretEncryptionKey decrypts/encrypts app_credentials.secret_encrypted
 	// (internal/platform/secretbox) so a dashboard user can reveal a
 	// credential's secret again after the one-time creation response is
@@ -145,6 +153,7 @@ func Load() (Config, error) {
 		AuthSecret:         os.Getenv("AUTH_SECRET"),
 		TurnstileSecret:    os.Getenv("TURNSTILE_SECRET"),
 		InternalAuthKey:    os.Getenv("INTERNAL_AUTH_KEY"),
+		EdgeRealtimeURL:    os.Getenv("EDGE_REALTIME_URL"),
 		TiersConfigPath:    getenvDefault("TIERS_CONFIG", "/etc/chat/tiers.yaml"),
 		KafkaConsumerGroup: os.Getenv("KAFKA_CONSUMER_GROUP"),
 		ShardID:            os.Getenv("SHARD_ID"),
