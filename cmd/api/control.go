@@ -26,6 +26,7 @@ import (
 	"github.com/darkoatanasovski/chat/internal/platform/debug"
 	"github.com/darkoatanasovski/chat/internal/platform/logging"
 	"github.com/darkoatanasovski/chat/internal/platform/metrics"
+	"github.com/darkoatanasovski/chat/internal/platform/migrate"
 	"github.com/darkoatanasovski/chat/internal/platform/secretbox"
 	"github.com/darkoatanasovski/chat/internal/polls"
 	"github.com/darkoatanasovski/chat/internal/quota"
@@ -36,6 +37,7 @@ import (
 	"github.com/darkoatanasovski/chat/internal/topology"
 	"github.com/darkoatanasovski/chat/internal/translations"
 	"github.com/darkoatanasovski/chat/internal/users"
+	"github.com/darkoatanasovski/chat/migrations"
 )
 
 // RunControl is the CONTROL-plane entrypoint (`chat control`): the global
@@ -67,6 +69,13 @@ func RunControl() {
 	configPool, err := pgstorage.Connect(ctx, cfg.ConfigDSN)
 	if err != nil {
 		log.Error("connect config db", "error", err)
+		os.Exit(1)
+	}
+
+	// The control plane owns the global config DB; apply its migrations on
+	// startup (advisory-locked, idempotent) so its schema is current.
+	if err := migrate.Apply(ctx, configPool, migrations.FS, "config", "apps", 424202, log); err != nil {
+		log.Error("apply config migrations", "error", err)
 		os.Exit(1)
 	}
 
