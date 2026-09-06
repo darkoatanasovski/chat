@@ -385,7 +385,7 @@ func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	// off for a freshly-created message with a body (a duplicate retry
 	// returning the original message doesn't need a second attempt).
 	if app.ChannelCapabilities.URLEnrichment && status == messages.StatusSent {
-		a.enrichLinkPreview(pool, channelID, msg.MessageID, msg.Body)
+		a.enrichLinkPreview(pool, channelID, msg.MessageID, msg.SenderID, msg.Body)
 	}
 
 	writeJSON(w, http.StatusCreated, messageResponseFrom(msg))

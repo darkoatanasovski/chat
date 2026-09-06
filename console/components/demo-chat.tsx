@@ -48,6 +48,7 @@ const CHANNELS = [
 type Status = "sending" | "delivered" | "read";
 type Reaction = { reaction: string; user_id: string };
 type Attachment = { url: string; type?: string; filename?: string; size_bytes?: number };
+type LinkPreview = { url: string; title?: string; description?: string; image_url?: string; site_name?: string };
 type Message = {
   message_id: string;
   sender_id: string;
@@ -58,6 +59,7 @@ type Message = {
   reaction_counts: Record<string, number>;
   latest_reactions: Reaction[];
   attachments?: Attachment[];
+  link_preview?: LinkPreview | null;
   cid?: string; // client id for optimistic sends, before the server echoes back
   pending?: boolean; // true while the POST is in flight
 };
@@ -177,6 +179,40 @@ function AttachmentView({ a, mine }: { a: Attachment; mine: boolean }) {
     >
       <FileText className="h-4 w-4 shrink-0 text-text-muted" />
       <span className="max-w-[12rem] truncate">{a.filename || "file"}</span>
+    </a>
+  );
+}
+
+function LinkPreviewCard({ p, onRemove }: { p: LinkPreview; onRemove?: () => void }) {
+  return (
+    <a
+      href={p.url}
+      target="_blank"
+      rel="noreferrer"
+      className="chat-item group/lp relative mt-1 block max-w-[18rem] overflow-hidden rounded-xl border border-border bg-bg transition-colors hover:border-accent"
+    >
+      {p.image_url && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={p.image_url} alt="" className="h-28 w-full object-cover" />
+      )}
+      <div className="px-3 py-2">
+        {p.site_name && <div className="text-[10px] uppercase tracking-wide text-text-faint">{p.site_name}</div>}
+        {p.title && <div className="mt-0.5 line-clamp-2 text-[13px] font-medium text-text">{p.title}</div>}
+        {p.description && <div className="mt-0.5 line-clamp-2 text-[11px] text-text-muted">{p.description}</div>}
+      </div>
+      {onRemove && (
+        <button
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onRemove();
+          }}
+          title="Remove preview"
+          className="absolute right-1.5 top-1.5 grid h-5 w-5 place-items-center rounded-full bg-bg/80 text-xs text-text-muted opacity-0 transition-opacity hover:text-text group-hover/lp:opacity-100"
+        >
+          ×
+        </button>
+      )}
     </a>
   );
 }
@@ -392,6 +428,12 @@ export default function DemoChat() {
             m.message_id === f.message_id ? { ...m, body: f.body as string, edited_at: f.edited_at as string } : m,
           ),
         );
+      } else if (type === "link_preview.updated") {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.message_id === f.message_id ? { ...m, link_preview: (f.link_preview as LinkPreview) || null } : m,
+          ),
+        );
       } else if (type === "reaction.updated") {
         setMessages((prev) =>
           prev.map((m) =>
@@ -563,6 +605,13 @@ export default function DemoChat() {
     });
   }
 
+  async function removeLinkPreview(m: Message) {
+    if (!session) return;
+    // optimistic clear; the link_preview.updated event confirms for everyone
+    setMessages((prev) => prev.map((x) => (x.message_id === m.message_id ? { ...x, link_preview: null } : x)));
+    await authed(`/channels/${session.channelId}/messages/${m.message_id}/link-preview`, { method: "DELETE" });
+  }
+
   function myReacted(m: Message, key: string) {
     return m.latest_reactions?.some((r) => r.reaction === key && r.user_id === session?.userId);
   }
@@ -729,7 +778,7 @@ export default function DemoChat() {
 
                 if (mine) {
                   return (
-                    <div key={m.message_id} className="group flex flex-col items-end">
+                    <div key={m.message_id} className="chat-item group flex flex-col items-end">
                       {editing?.id === m.message_id ? (
                         <div className="flex w-full max-w-[80%] items-center gap-2">
                           <input
@@ -754,6 +803,9 @@ export default function DemoChat() {
                           {m.attachments?.map((a, i) => (
                             <AttachmentView key={i} a={a} mine />
                           ))}
+                          {m.link_preview && (
+                            <LinkPreviewCard p={m.link_preview} onRemove={() => removeLinkPreview(m)} />
+                          )}
                         </>
                       )}
                       <div className="mt-1 flex items-center gap-1.5 pr-1 text-[10px] text-text-faint">
@@ -803,7 +855,7 @@ export default function DemoChat() {
                 }
 
                 return (
-                  <div key={m.message_id} className="group flex items-end gap-2">
+                  <div key={m.message_id} className="chat-item group flex items-end gap-2">
                     <Avatar name={names[m.sender_id] || "Someone"} />
                     <div className="flex max-w-[80%] flex-col items-start">
                       <span
@@ -820,6 +872,7 @@ export default function DemoChat() {
                       {m.attachments?.map((a, i) => (
                         <AttachmentView key={i} a={a} mine={false} />
                       ))}
+                      {m.link_preview && <LinkPreviewCard p={m.link_preview} />}
                       <div className="mt-1 flex items-center gap-1.5 pl-1">
                         {reactionPills.length > 0 && (
                           <span className="inline-flex items-center gap-1">

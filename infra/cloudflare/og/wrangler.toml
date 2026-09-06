@@ -1,0 +1,6 @@
+# OpenGraph link-preview Worker (src/worker.js) — edge-native replacement for
+# the Go cmd/ogservice. Deploy: wrangler deploy (from this directory).
+# Point the cell api's OG_SERVICE_URL at this Worker's URL.
+name = "chat-og"
+main = "src/worker.js"
+compatibility_date = "2024-09-01"

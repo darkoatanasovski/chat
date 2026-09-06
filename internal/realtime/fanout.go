@@ -17,12 +17,12 @@ import (
 // DeliveryFrame is the JSON payload pushed to WebSocket clients for
 // message.created.
 type DeliveryFrame struct {
-	Type             string     `json:"type"`
-	ChannelID        uuid.UUID  `json:"channel_id"`
-	MessageID        uuid.UUID  `json:"message_id"`
-	Sequence         int64      `json:"sequence"`
-	SenderID         uuid.UUID  `json:"sender_id"`
-	Body             string     `json:"body"`
+	Type             string              `json:"type"`
+	ChannelID        uuid.UUID           `json:"channel_id"`
+	MessageID        uuid.UUID           `json:"message_id"`
+	Sequence         int64               `json:"sequence"`
+	SenderID         uuid.UUID           `json:"sender_id"`
+	Body             string              `json:"body"`
 	ParentID         *uuid.UUID          `json:"parent_id,omitempty"`
 	ParentReplyCount *int64              `json:"parent_reply_count,omitempty"`
 	PollID           *uuid.UUID          `json:"poll_id,omitempty"`
@@ -73,12 +73,12 @@ type ReadDeliveryFrame struct {
 // full current state" shape as ReactionDeliveryFrame, so the client patches
 // its local copy of the poll without a follow-up GET.
 type PollVoteDeliveryFrame struct {
-	Type        string                  `json:"type"`
-	ChannelID   uuid.UUID               `json:"channel_id"`
-	PollID      uuid.UUID               `json:"poll_id"`
-	ActorID     uuid.UUID               `json:"actor_id"`
+	Type        string                   `json:"type"`
+	ChannelID   uuid.UUID                `json:"channel_id"`
+	PollID      uuid.UUID                `json:"poll_id"`
+	ActorID     uuid.UUID                `json:"actor_id"`
 	Options     []events.PollOptionTally `json:"options"`
-	TotalVoters int                     `json:"total_voters"`
+	TotalVoters int                      `json:"total_voters"`
 }
 
 // MessagePinDeliveryFrame is the JSON payload pushed to WebSocket clients
@@ -304,6 +304,8 @@ func (f *Fanout) handle(ctx context.Context, msg kafkago.Message) error {
 		return f.handlePollVoteUpdated(ctx, msg)
 	case events.TopicMessageEdited:
 		return f.handleMessageEdited(ctx, msg)
+	case events.TopicLinkPreviewUpdated:
+		return f.handleLinkPreviewUpdated(ctx, msg)
 	case events.TopicMessagePinUpdated:
 		return f.handleMessagePinUpdated(ctx, msg)
 	case events.TopicCustomEvent:
@@ -420,6 +422,36 @@ func (f *Fanout) handlePollVoteUpdated(ctx context.Context, msg kafkago.Message)
 	}
 
 	return f.delivery.ToChannelMembers(ctx, payload.ChannelID, frame, payload.ActorID, uuid.Nil)
+}
+
+// LinkPreviewDeliveryFrame is the JSON pushed for link_preview.updated — a
+// message's fresh link preview (or null when removed), so a client renders or
+// clears the card in place without a refetch.
+type LinkPreviewDeliveryFrame struct {
+	Type        string              `json:"type"`
+	ChannelID   uuid.UUID           `json:"channel_id"`
+	MessageID   uuid.UUID           `json:"message_id"`
+	LinkPreview *events.LinkPreview `json:"link_preview"`
+}
+
+func (f *Fanout) handleLinkPreviewUpdated(ctx context.Context, msg kafkago.Message) error {
+	var payload events.LinkPreviewUpdatedPayload
+	if err := json.Unmarshal(msg.Value, &payload); err != nil {
+		return fmt.Errorf("fanout: unmarshal payload: %w", err)
+	}
+	// No EventID/dedup: this event is idempotent to render (it carries the
+	// message's full current preview state), so a redelivery just re-applies
+	// the same card. Block/exclude filtering uses the message's own sender.
+	frame, err := json.Marshal(LinkPreviewDeliveryFrame{
+		Type:        "link_preview.updated",
+		ChannelID:   payload.ChannelID,
+		MessageID:   payload.MessageID,
+		LinkPreview: payload.LinkPreview,
+	})
+	if err != nil {
+		return fmt.Errorf("fanout: marshal link preview delivery frame: %w", err)
+	}
+	return f.delivery.ToChannelMembers(ctx, payload.ChannelID, frame, payload.SenderID, uuid.Nil)
 }
 
 func (f *Fanout) handleMessageEdited(ctx context.Context, msg kafkago.Message) error {

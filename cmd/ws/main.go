@@ -113,6 +113,7 @@ func Run() {
 		events.TopicMessageCreated, events.TopicReactionUpdated, events.TopicReadUpdated,
 		events.TopicPollVoteUpdated, events.TopicMessageEdited, events.TopicMessagePinUpdated,
 		events.TopicCustomEvent, events.TopicMessageReminderDue, events.TopicUnreadReminderDue,
+		events.TopicLinkPreviewUpdated,
 	}
 	consumer := kafkastorage.NewConsumer(cfg.KafkaBrokers, consumerTopics, cfg.KafkaConsumerGroup)
 	fanout := realtime.NewFanout(consumer, delivery, dedup, m, log)

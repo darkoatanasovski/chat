@@ -61,6 +61,31 @@ type Attachment struct {
 	SizeBytes int64  `json:"size_bytes,omitempty"`
 }
 
+const TopicLinkPreviewUpdated = "link_preview.updated"
+
+// LinkPreview mirrors internal/messages.LinkPreview on the wire (same
+// import-cycle reason as Attachment).
+type LinkPreview struct {
+	URL         string `json:"url"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	ImageURL    string `json:"image_url,omitempty"`
+	SiteName    string `json:"site_name,omitempty"`
+}
+
+// LinkPreviewUpdatedPayload carries a message's link preview once the
+// url_enrichment fetch resolves it (LinkPreview set) or when a member removes
+// it (LinkPreview nil). Delivered live so a connected client renders/clears the
+// card without re-fetching — the same "durable event carries everything needed"
+// shape as the other payloads. SenderID is the message's own sender, so block
+// filtering matches the message it belongs to.
+type LinkPreviewUpdatedPayload struct {
+	ChannelID   uuid.UUID    `json:"channel_id"`
+	MessageID   uuid.UUID    `json:"message_id"`
+	SenderID    uuid.UUID    `json:"sender_id"`
+	LinkPreview *LinkPreview `json:"link_preview"`
+}
+
 const TopicReactionUpdated = "reaction.updated"
 
 // ReactionSummary is one entry of a message's denormalized latest-reactions

@@ -42,7 +42,7 @@ const linkPreviewFetchTimeout = 5 * time.Second
 // rather than a single local write. Never blocks or fails the send itself:
 // handleSendMessage calls this only after Send has already committed and
 // the response has been prepared.
-func (a *App) enrichLinkPreview(pool *pgxpool.Pool, channelID, messageID uuid.UUID, body string) {
+func (a *App) enrichLinkPreview(pool *pgxpool.Pool, channelID, messageID, senderID uuid.UUID, body string) {
 	url := firstURLPattern.FindString(body)
 	if url == "" {
 		return
@@ -61,10 +61,60 @@ func (a *App) enrichLinkPreview(pool *pgxpool.Pool, channelID, messageID uuid.UU
 			// rather than writing an all-empty object.
 			return
 		}
-		if err := a.messagesRepo.SetLinkPreview(ctx, pool, channelID, messageID, preview); err != nil {
+		if err := a.messagesRepo.SetLinkPreview(ctx, pool, channelID, messageID, senderID, preview); err != nil {
 			a.log.Warn("link preview: store", "error", err, "message_id", messageID)
 		}
 	}()
+}
+
+// handleRemoveLinkPreview backs DELETE /channels/{id}/messages/{message_id}/link-preview:
+// the message's own sender clears the auto-generated preview from their message.
+// Emits link_preview.updated (nil) so it disappears live for everyone.
+func (a *App) handleRemoveLinkPreview(w http.ResponseWriter, r *http.Request) {
+	identity, _ := identityFromContext(r.Context())
+
+	channelID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	messageID, err := uuid.Parse(r.PathValue("message_id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid message id")
+		return
+	}
+	if _, ok := a.checkChannelWriteAccess(w, r, channelID, identity); !ok {
+		return
+	}
+
+	pool, _, _, err := a.shardPoolFor(channelID.String())
+	if err != nil {
+		a.log.Error("resolve shard pool", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to remove link preview")
+		return
+	}
+
+	msg, ok, err := a.messagesRepo.GetByID(r.Context(), pool, channelID, messageID)
+	if err != nil {
+		a.log.Error("get message", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to remove link preview")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "message not found")
+		return
+	}
+	if msg.SenderID != identity.UserID {
+		writeError(w, http.StatusForbidden, "only the sender can remove a link preview")
+		return
+	}
+
+	if err := a.messagesRepo.SetLinkPreview(r.Context(), pool, channelID, messageID, msg.SenderID, nil); err != nil {
+		a.log.Error("remove link preview", "error", err, "message_id", messageID)
+		writeError(w, http.StatusInternalServerError, "failed to remove link preview")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // fetchLinkPreview asks ogServiceBaseURL's GET /og?url= for metadata on

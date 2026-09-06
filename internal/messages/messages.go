@@ -631,17 +631,41 @@ func (r *Repo) Reject(ctx context.Context, pool *pgxpool.Pool, channelID, messag
 // exists by the time the fetch completes (e.g. already deleted by
 // retention) is a silent no-op, not an error — nothing meaningful to do at
 // that point.
-func (r *Repo) SetLinkPreview(ctx context.Context, pool *pgxpool.Pool, channelID, messageID uuid.UUID, preview *LinkPreview) error {
-	data, err := json.Marshal(preview)
+// SetLinkPreview stores (or, with preview == nil, clears) a message's link
+// preview and emits a link_preview.updated event in the same transaction, so
+// connected clients render/remove the card live instead of only seeing it on a
+// refetch. senderID is the message's own sender (block filtering parity).
+func (r *Repo) SetLinkPreview(ctx context.Context, pool *pgxpool.Pool, channelID, messageID, senderID uuid.UUID, preview *LinkPreview) error {
+	data, err := json.Marshal(preview) // nil marshals to JSON null → clears the column
 	if err != nil {
 		return fmt.Errorf("messages: marshal link_preview: %w", err)
 	}
-	if _, err := pool.Exec(ctx, `
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("messages: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
 		UPDATE messages SET link_preview = $1 WHERE channel_id = $2 AND message_id = $3
 	`, data, channelID, messageID); err != nil {
 		return fmt.Errorf("messages: set link_preview: %w", err)
 	}
-	return nil
+
+	var ep *events.LinkPreview
+	if preview != nil {
+		ep = &events.LinkPreview{
+			URL: preview.URL, Title: preview.Title, Description: preview.Description,
+			ImageURL: preview.ImageURL, SiteName: preview.SiteName,
+		}
+	}
+	payload := events.LinkPreviewUpdatedPayload{
+		ChannelID: channelID, MessageID: messageID, SenderID: senderID, LinkPreview: ep,
+	}
+	if err := events.InsertOutbox(ctx, tx, events.TopicLinkPreviewUpdated, channelID, payload); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // messageColumns is the full column list every "read back a whole message

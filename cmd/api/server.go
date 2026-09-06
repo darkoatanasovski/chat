@@ -62,6 +62,7 @@ func (a *App) registerDataRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /channels/{id}/messages", a.instrument("send_message", a.requireAuth(a.handleSendMessage)))
 	mux.HandleFunc("GET /channels/{id}/messages", a.instrument("list_messages", a.requireAuth(a.handleListMessages)))
 	mux.HandleFunc("PATCH /channels/{id}/messages/{message_id}", a.instrument("edit_message", a.requireAuth(a.handleEditMessage)))
+	mux.HandleFunc("DELETE /channels/{id}/messages/{message_id}/link-preview", a.instrument("remove_link_preview", a.requireAuth(a.handleRemoveLinkPreview)))
 	mux.HandleFunc("POST /channels/{id}/messages/{message_id}/reactions", a.instrument("add_reaction", a.requireAuth(a.handleAddReaction)))
 	mux.HandleFunc("DELETE /channels/{id}/messages/{message_id}/reactions/{reaction}", a.instrument("remove_reaction", a.requireAuth(a.handleRemoveReaction)))
 	mux.HandleFunc("POST /channels/{id}/messages/{message_id}/pin", a.instrument("pin_message", a.requireAuth(a.handlePinMessage)))

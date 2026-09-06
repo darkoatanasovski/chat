@@ -1,5 +1,23 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
+// One-time-per-instance guard: the demo app's url_enrichment capability is
+// enabled lazily on the first session mint (see below).
+let enrichEnsured = false;
+
+// appIdFromToken decodes the app JWT's payload (base64url(json).base64url(sig))
+// to read its app_id, so we can PATCH the demo app's capabilities without a
+// separately-configured app id.
+function appIdFromToken(token: string): number | string | null {
+  try {
+    const payload = token.split(".")[0];
+    const b64 = payload.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(payload.length / 4) * 4, "=");
+    const claims = JSON.parse(atob(b64)) as { app_id?: number; sub?: string };
+    return claims.app_id ?? claims.sub ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // POST /api/demo/session { username }
 // Server-side: mints an end-user in the demo (ENTERPRISE) app and adds them to
 // the shared Lobby channel, then returns a scoped user token to the browser.
@@ -56,6 +74,19 @@ export async function POST(request: Request): Promise<Response> {
         headers: { authorization: `Bearer ${session.token}`, "content-type": "application/json" },
         body: JSON.stringify({ user_id: user.user_id }),
       });
+      // Ensure the demo app has url_enrichment on so posted links get a preview.
+      // Idempotent capability merge, run once per Worker instance.
+      if (!enrichEnsured) {
+        const appId = appIdFromToken(appTok.token);
+        if (appId) {
+          await fetch(`${control}/apps/${appId}`, {
+            method: "PATCH",
+            headers: { authorization: `Bearer ${session.token}`, "content-type": "application/json" },
+            body: JSON.stringify({ channel_capabilities: { url_enrichment: true } }),
+          }).catch(() => {});
+        }
+        enrichEnsured = true;
+      }
     }
 
     return json(200, {
