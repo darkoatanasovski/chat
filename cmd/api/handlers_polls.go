@@ -48,16 +48,16 @@ func toVotedOptionIDs(ids []uuid.UUID) []string {
 // same "the write returns only the state it touched" shape as reactions'
 // reactionStateResponse.
 type pollResponse struct {
-	PollID         string                `json:"poll_id"`
-	ChannelID      string                `json:"channel_id"`
-	CreatorID      string                `json:"creator_id"`
-	Question       string                `json:"question"`
-	MultiSelect    bool                  `json:"multi_select"`
-	ClosesAt       *string               `json:"closes_at,omitempty"`
-	CreatedAt      string                `json:"created_at"`
-	Options        []pollOptionResponse  `json:"options"`
-	TotalVoters    int                   `json:"total_voters"`
-	VotedOptionIDs []string              `json:"voted_option_ids,omitempty"`
+	PollID         string               `json:"poll_id"`
+	ChannelID      string               `json:"channel_id"`
+	CreatorID      string               `json:"creator_id"`
+	Question       string               `json:"question"`
+	MultiSelect    bool                 `json:"multi_select"`
+	ClosesAt       *string              `json:"closes_at,omitempty"`
+	CreatedAt      string               `json:"created_at"`
+	Options        []pollOptionResponse `json:"options"`
+	TotalVoters    int                  `json:"total_voters"`
+	VotedOptionIDs []string             `json:"voted_option_ids,omitempty"`
 }
 
 func pollResponseFrom(p polls.Poll) pollResponse {

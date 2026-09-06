@@ -27,6 +27,7 @@ type DeliveryFrame struct {
 	ParentReplyCount *int64              `json:"parent_reply_count,omitempty"`
 	PollID           *uuid.UUID          `json:"poll_id,omitempty"`
 	Attachments      []events.Attachment `json:"attachments,omitempty"`
+	Custom           json.RawMessage     `json:"custom,omitempty"`
 	CreatedAt        string              `json:"created_at"`
 }
 
@@ -348,6 +349,7 @@ func (f *Fanout) handleMessageCreated(ctx context.Context, msg kafkago.Message) 
 		ParentReplyCount: payload.ParentReplyCount,
 		PollID:           payload.PollID,
 		Attachments:      payload.Attachments,
+		Custom:           payload.Custom,
 		CreatedAt:        payload.CreatedAt.Format("2006-01-02T15:04:05.000Z07:00"),
 	})
 	if err != nil {

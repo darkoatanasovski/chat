@@ -2,6 +2,7 @@ package channels
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -24,18 +25,26 @@ func NewService(repo *Repo) *Service {
 // CreateChannel mints a channel within appID (the tenant-isolation boundary
 // it belongs to for its whole lifetime). No home_region / virtual_shard: the
 // app is already pinned to one cell, and every channel it owns lives there.
-func (s *Service) CreateChannel(ctx context.Context, name string, creator uuid.UUID, appID int64) (Channel, error) {
+func (s *Service) CreateChannel(ctx context.Context, name string, creator uuid.UUID, appID int64, visibility string, custom json.RawMessage) (Channel, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return Channel{}, fmt.Errorf("channels: generate id: %w", err)
 	}
+	if visibility == "" {
+		visibility = VisibilityPrivate
+	}
+	if len(custom) == 0 {
+		custom = json.RawMessage("{}")
+	}
 
 	c := Channel{
-		ChannelID: id,
-		Name:      name,
-		AppID:     appID,
-		CreatedBy: creator,
-		CreatedAt: time.Now().UTC(),
+		ChannelID:  id,
+		Name:       name,
+		AppID:      appID,
+		CreatedBy:  creator,
+		CreatedAt:  time.Now().UTC(),
+		Visibility: visibility,
+		Custom:     custom,
 	}
 	if err := s.repo.CreateWithCreatorMembership(ctx, c); err != nil {
 		return Channel{}, err

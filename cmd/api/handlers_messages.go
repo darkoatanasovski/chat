@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,8 +21,8 @@ const unlimitedThreadDepth = 0
 type messageRow messages.Message
 
 type sendMessageRequest struct {
-	ClientMessageID string  `json:"client_message_id"`
-	Body            string  `json:"body"`
+	ClientMessageID string `json:"client_message_id"`
+	Body            string `json:"body"`
 	// ParentID, if set, makes this a reply — see internal/messages.Repo.Send
 	// and apps.App.MaxThreadDepth for how nesting depth is enforced. Only
 	// accepted when this app's "threads_and_replies" capability is on (403
@@ -45,6 +46,9 @@ type sendMessageRequest struct {
 	// Location is only accepted when this app's "location_sharing"
 	// capability is on (403 otherwise).
 	Location *messages.Location `json:"location,omitempty"`
+	// Custom is app-defined JSON metadata stored on the message and made
+	// searchable — populated by the SDK/client, no capability gate.
+	Custom json.RawMessage `json:"custom,omitempty"`
 	// Pending, if true, is only accepted when this app's "pending_messages"
 	// capability is on (403 otherwise) — the message is created with
 	// status=pending, visible only to its own sender until a moderator
@@ -53,16 +57,16 @@ type sendMessageRequest struct {
 }
 
 type messageResponse struct {
-	MessageID       string                    `json:"message_id"`
-	ChannelID       string                    `json:"channel_id"`
-	Sequence        int64                     `json:"sequence"`
-	SenderID        string                    `json:"sender_id"`
-	ClientMessageID string                    `json:"client_message_id"`
-	Body            string                    `json:"body"`
-	ParentID        *string                   `json:"parent_id,omitempty"`
-	ReplyCount      int64                     `json:"reply_count"`
-	PollID          *string                   `json:"poll_id,omitempty"`
-	CreatedAt       string                    `json:"created_at"`
+	MessageID       string  `json:"message_id"`
+	ChannelID       string  `json:"channel_id"`
+	Sequence        int64   `json:"sequence"`
+	SenderID        string  `json:"sender_id"`
+	ClientMessageID string  `json:"client_message_id"`
+	Body            string  `json:"body"`
+	ParentID        *string `json:"parent_id,omitempty"`
+	ReplyCount      int64   `json:"reply_count"`
+	PollID          *string `json:"poll_id,omitempty"`
+	CreatedAt       string  `json:"created_at"`
 	// EditedAt is absent for a message that's never been edited — present
 	// (and refreshed) after every PATCH /channels/{id}/messages/{message_id}.
 	EditedAt        *string                   `json:"edited_at,omitempty"`
@@ -86,6 +90,8 @@ type messageResponse struct {
 	// Location is absent unless this message shared one — the
 	// "location_sharing" capability.
 	Location *messages.Location `json:"location,omitempty"`
+	// Custom is the message's app-defined JSON metadata (always present, {} when none).
+	Custom json.RawMessage `json:"custom,omitempty"`
 	// Status is "sent" or "pending" — the "pending_messages" capability.
 	Status string `json:"status"`
 }
@@ -145,6 +151,7 @@ func messageResponseFrom(m messageRow) messageResponse {
 		Attachments:     attachments,
 		LinkPreview:     m.LinkPreview,
 		Location:        m.Location,
+		Custom:          m.Custom,
 		Status:          m.Status,
 	}
 }
@@ -353,7 +360,7 @@ func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 
 	var msg messageRow
 	err = a.metrics.TimePostgres("send_message", func() error {
-		m, _, sendErr := a.messagesRepo.Send(r.Context(), pool, channelID, identity.UserID, clientMessageID, req.Body, parentID, maxThreadDepth, pollID, quotedMessageID, attachments, location, status)
+		m, _, sendErr := a.messagesRepo.Send(r.Context(), pool, channelID, identity.UserID, clientMessageID, req.Body, parentID, maxThreadDepth, pollID, quotedMessageID, attachments, location, status, req.Custom)
 		msg = messageRow(m)
 		return sendErr
 	})
@@ -405,13 +412,14 @@ func (a *App) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isMember, err := a.membershipRepo.IsMember(r.Context(), channelID, identity.UserID)
+	// Members can always read; anyone in the app can read a PUBLIC channel.
+	canRead, err := a.canReadChannel(r, channelID, identity)
 	if err != nil {
-		a.log.Error("check membership", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to check membership")
+		a.log.Error("check channel read access", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to check access")
 		return
 	}
-	if !isMember {
+	if !canRead {
 		writeError(w, http.StatusForbidden, "not a member of this channel")
 		return
 	}

@@ -8,6 +8,7 @@ package channels
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -27,7 +28,18 @@ type Channel struct {
 	AppID     int64 // tenant-isolation boundary — see routing.ChannelRoute
 	CreatedBy uuid.UUID
 	CreatedAt time.Time
+	// Visibility is "public" (any app user may read/join/discover it) or
+	// "private" (members only — the default). See migrations/cell/0002.
+	Visibility string
+	// Custom is app-defined JSON metadata (searchable). Defaults to {}.
+	Custom json.RawMessage
 }
+
+// VisibilityPublic / VisibilityPrivate are the allowed channel visibilities.
+const (
+	VisibilityPublic  = "public"
+	VisibilityPrivate = "private"
+)
 
 type Repo struct {
 	pool *pgxpool.Pool
@@ -49,10 +61,18 @@ func (r *Repo) CreateWithCreatorMembership(ctx context.Context, c Channel) error
 	}
 	defer tx.Rollback(ctx)
 
+	visibility := c.Visibility
+	if visibility == "" {
+		visibility = VisibilityPrivate
+	}
+	custom := c.Custom
+	if len(custom) == 0 {
+		custom = json.RawMessage("{}")
+	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO channels (channel_id, name, app_id, created_by, created_at)
-		VALUES ($1, $2, $3, $4, $5)
-	`, c.ChannelID, c.Name, c.AppID, c.CreatedBy, c.CreatedAt); err != nil {
+		INSERT INTO channels (channel_id, name, app_id, created_by, created_at, visibility, custom)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, c.ChannelID, c.Name, c.AppID, c.CreatedBy, c.CreatedAt, visibility, custom); err != nil {
 		return fmt.Errorf("channels: create: %w", err)
 	}
 
@@ -76,17 +96,87 @@ func (r *Repo) CreateWithCreatorMembership(ctx context.Context, c Channel) error
 
 func (r *Repo) Get(ctx context.Context, channelID uuid.UUID) (Channel, error) {
 	var c Channel
+	var custom []byte
 	err := r.pool.QueryRow(ctx, `
-		SELECT channel_id, name, app_id, created_by, created_at
+		SELECT channel_id, name, app_id, created_by, created_at, visibility, custom
 		FROM channels WHERE channel_id = $1
-	`, channelID).Scan(&c.ChannelID, &c.Name, &c.AppID, &c.CreatedBy, &c.CreatedAt)
+	`, channelID).Scan(&c.ChannelID, &c.Name, &c.AppID, &c.CreatedBy, &c.CreatedAt, &c.Visibility, &custom)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return Channel{}, ErrNotFound
 		}
 		return Channel{}, fmt.Errorf("channels: get: %w", err)
 	}
+	if len(custom) > 0 {
+		c.Custom = append(json.RawMessage(nil), custom...)
+	} else {
+		c.Custom = json.RawMessage("{}")
+	}
 	return c, nil
+}
+
+// SetVisibility updates a channel's visibility (public|private).
+func (r *Repo) SetVisibility(ctx context.Context, channelID uuid.UUID, visibility string) error {
+	if _, err := r.pool.Exec(ctx, `UPDATE channels SET visibility = $1 WHERE channel_id = $2`, visibility, channelID); err != nil {
+		return fmt.Errorf("channels: set visibility: %w", err)
+	}
+	return nil
+}
+
+// JoinPublic adds userID as a member of a public channel (self-service join).
+// Idempotent; the caller must have already confirmed the channel is public.
+func (r *Repo) JoinPublic(ctx context.Context, channelID, userID uuid.UUID) error {
+	now := time.Now().UTC()
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("channels: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `INSERT INTO channel_members (channel_id, user_id, added_at) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, channelID, userID, now); err != nil {
+		return fmt.Errorf("channels: join member: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO user_channels (user_id, channel_id, joined_at) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, userID, channelID, now); err != nil {
+		return fmt.Errorf("channels: join index: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+// Search returns channels in an app matching q by name, restricted to those
+// the user may see: public channels plus any the user is already a member of.
+// Empty q returns public + member channels. Ordered by name, capped at limit.
+func (r *Repo) Search(ctx context.Context, appID int64, userID uuid.UUID, q string, limit int) ([]Channel, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT c.channel_id, c.name, c.app_id, c.created_by, c.created_at, c.visibility, c.custom
+		FROM channels c
+		WHERE c.app_id = $1
+		  AND ($2 = '' OR c.name ILIKE '%' || $2 || '%')
+		  AND (c.visibility = 'public'
+		       OR EXISTS (SELECT 1 FROM channel_members m WHERE m.channel_id = c.channel_id AND m.user_id = $3))
+		ORDER BY c.name
+		LIMIT $4
+	`, appID, q, userID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("channels: search: %w", err)
+	}
+	defer rows.Close()
+	var out []Channel
+	for rows.Next() {
+		var c Channel
+		var custom []byte
+		if err := rows.Scan(&c.ChannelID, &c.Name, &c.AppID, &c.CreatedBy, &c.CreatedAt, &c.Visibility, &custom); err != nil {
+			return nil, fmt.Errorf("channels: search scan: %w", err)
+		}
+		if len(custom) > 0 {
+			c.Custom = append(json.RawMessage(nil), custom...)
+		} else {
+			c.Custom = json.RawMessage("{}")
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // CountByCreator backs the max_channels resource quota

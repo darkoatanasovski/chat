@@ -17,12 +17,12 @@ import (
 const TopicMessageCreated = "message.created"
 
 type MessageCreatedPayload struct {
-	MessageID       uuid.UUID  `json:"message_id"`
-	ChannelID       uuid.UUID  `json:"channel_id"`
-	SenderID        uuid.UUID  `json:"sender_id"`
-	ClientMessageID uuid.UUID  `json:"client_message_id"`
-	Sequence        int64      `json:"sequence"`
-	Body            string     `json:"body"`
+	MessageID       uuid.UUID `json:"message_id"`
+	ChannelID       uuid.UUID `json:"channel_id"`
+	SenderID        uuid.UUID `json:"sender_id"`
+	ClientMessageID uuid.UUID `json:"client_message_id"`
+	Sequence        int64     `json:"sequence"`
+	Body            string    `json:"body"`
 	// ParentID is nil for a top-level message, or the message this one
 	// replies to (internal/messages.Repo.Send) — carried through so a
 	// realtime consumer (internal/realtime/fanout.go) can render/thread a
@@ -40,7 +40,7 @@ type MessageCreatedPayload struct {
 	// (internal/polls) — carried through so a realtime consumer can fetch
 	// and render the poll without waiting for a follow-up request to
 	// discover it exists.
-	PollID    *uuid.UUID `json:"poll_id,omitempty"`
+	PollID *uuid.UUID `json:"poll_id,omitempty"`
 	// Attachments carries the message's client-supplied file/media references
 	// (the "uploads" capability) so a realtime consumer renders them live
 	// without a follow-up fetch — the same "durable event carries everything
@@ -48,7 +48,10 @@ type MessageCreatedPayload struct {
 	// Defined here (rather than importing internal/messages, which would be a
 	// cycle) exactly like ReactionSummary is.
 	Attachments []Attachment `json:"attachments,omitempty"`
-	CreatedAt   time.Time    `json:"created_at"`
+	// Custom is the message's app-defined JSON metadata, carried through so a
+	// realtime consumer renders it live without a fetch. Omitted when empty.
+	Custom    json.RawMessage `json:"custom,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 // Attachment is the wire shape of one message attachment — mirrors
@@ -140,12 +143,12 @@ type PollOptionTally struct {
 // its local copy of the poll without re-fetching it. EventID exists for
 // the same redelivery-dedup reason as ReactionUpdatedPayload's.
 type PollVoteUpdatedPayload struct {
-	EventID     uuid.UUID          `json:"event_id"`
-	ChannelID   uuid.UUID          `json:"channel_id"`
-	PollID      uuid.UUID          `json:"poll_id"`
-	ActorID     uuid.UUID          `json:"actor_id"`
-	Options     []PollOptionTally  `json:"options"`
-	TotalVoters int                `json:"total_voters"`
+	EventID     uuid.UUID         `json:"event_id"`
+	ChannelID   uuid.UUID         `json:"channel_id"`
+	PollID      uuid.UUID         `json:"poll_id"`
+	ActorID     uuid.UUID         `json:"actor_id"`
+	Options     []PollOptionTally `json:"options"`
+	TotalVoters int               `json:"total_voters"`
 }
 
 const TopicMessageEdited = "message.edited"
@@ -228,10 +231,10 @@ const TopicUnreadReminderDue = "unread_reminder.due"
 // LatestSequence are both carried so a client can render "N unread" without
 // a follow-up fetch.
 type UnreadReminderDuePayload struct {
-	ChannelID       uuid.UUID `json:"channel_id"`
-	UserID          uuid.UUID `json:"user_id"`
-	LastReadSequence int64    `json:"last_read_sequence"`
-	LatestSequence   int64    `json:"latest_sequence"`
+	ChannelID        uuid.UUID `json:"channel_id"`
+	UserID           uuid.UUID `json:"user_id"`
+	LastReadSequence int64     `json:"last_read_sequence"`
+	LatestSequence   int64     `json:"latest_sequence"`
 }
 
 const TopicCustomEvent = "custom.event"

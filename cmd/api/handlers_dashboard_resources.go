@@ -279,7 +279,7 @@ func (a *App) handleDashboardCreateChannel(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	c, err := a.channelsSvc.CreateChannel(r.Context(), req.Name, creatorID, app.AppID)
+	c, err := a.channelsSvc.CreateChannel(r.Context(), req.Name, creatorID, app.AppID, "", nil)
 	if err != nil {
 		a.log.Error("create channel", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to create channel")

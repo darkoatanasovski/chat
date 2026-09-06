@@ -19,6 +19,7 @@ import (
 	"github.com/darkoatanasovski/chat/internal/platform/auth"
 	"github.com/darkoatanasovski/chat/internal/platform/config"
 	"github.com/darkoatanasovski/chat/internal/platform/metrics"
+	"github.com/darkoatanasovski/chat/internal/platform/migrate"
 	"github.com/darkoatanasovski/chat/internal/platform/secretbox"
 	"github.com/darkoatanasovski/chat/internal/polls"
 	"github.com/darkoatanasovski/chat/internal/quota"
@@ -27,9 +28,10 @@ import (
 	"github.com/darkoatanasovski/chat/internal/realtime"
 	"github.com/darkoatanasovski/chat/internal/routing"
 	pgstorage "github.com/darkoatanasovski/chat/internal/storage/postgres"
-	"github.com/darkoatanasovski/chat/internal/topology"
 	redisstorage "github.com/darkoatanasovski/chat/internal/storage/redis"
+	"github.com/darkoatanasovski/chat/internal/topology"
 	"github.com/darkoatanasovski/chat/internal/users"
+	"github.com/darkoatanasovski/chat/migrations"
 )
 
 // buildTestApp wires an *App exactly like cmd/api/main.go does, but against
@@ -59,6 +61,12 @@ func buildTestApp() (*App, error) {
 	}
 	cellPool, err := pgstorage.Connect(ctx, "postgres://chat:chat@localhost:5434/chat?sslmode=disable")
 	if err != nil {
+		return nil, err
+	}
+	// Self-migrate the test cell DB, same as the real api does on startup, so
+	// tests exercise the current schema (idempotent; baselines the pre-existing
+	// dev-stack schema).
+	if err := migrate.Apply(ctx, cellPool, migrations.FS, "cell", "messages", 424201, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
 		return nil, err
 	}
 

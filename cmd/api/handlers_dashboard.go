@@ -675,7 +675,7 @@ type appDailyMessagesEntry struct {
 }
 
 type dashboardMessagesDailyResponse struct {
-	Days []string                 `json:"days"`
+	Days []string                `json:"days"`
 	Apps []appDailyMessagesEntry `json:"apps"`
 }
 

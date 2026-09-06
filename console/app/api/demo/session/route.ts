@@ -82,7 +82,7 @@ export async function POST(request: Request): Promise<Response> {
           await fetch(`${control}/apps/${appId}`, {
             method: "PATCH",
             headers: { authorization: `Bearer ${session.token}`, "content-type": "application/json" },
-            body: JSON.stringify({ channel_capabilities: { url_enrichment: true } }),
+            body: JSON.stringify({ channel_capabilities: { url_enrichment: true, search: true } }),
           }).catch(() => {});
         }
         enrichEnsured = true;

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -17,6 +18,11 @@ import (
 
 type createChannelRequest struct {
 	Name string `json:"name"`
+	// Visibility is "public" or "private" (default). Public channels are
+	// readable, joinable, and discoverable by any user of the app.
+	Visibility string `json:"visibility,omitempty"`
+	// Custom is app-defined JSON metadata (searchable).
+	Custom json.RawMessage `json:"custom,omitempty"`
 }
 
 type channelResponse struct {
@@ -25,7 +31,9 @@ type channelResponse struct {
 	// Region is the app's cell placement (this instance's region — the
 	// router only sends the app's requests to its own cell). There is no
 	// per-channel home_region or virtual_shard anymore (ADR 0006).
-	Region string `json:"region"`
+	Region     string          `json:"region"`
+	Visibility string          `json:"visibility"`
+	Custom     json.RawMessage `json:"custom,omitempty"`
 }
 
 // handleCreateChannel creates the channel in this cell — the only cell the
@@ -68,7 +76,12 @@ func (a *App) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c, err := a.channelsSvc.CreateChannel(r.Context(), req.Name, identity.UserID, identity.AppID)
+	if req.Visibility != "" && req.Visibility != channels.VisibilityPublic && req.Visibility != channels.VisibilityPrivate {
+		writeError(w, http.StatusBadRequest, "visibility must be 'public' or 'private'")
+		return
+	}
+
+	c, err := a.channelsSvc.CreateChannel(r.Context(), req.Name, identity.UserID, identity.AppID, req.Visibility, req.Custom)
 	if err != nil {
 		a.log.Error("create channel", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to create channel")
@@ -80,9 +93,87 @@ func (a *App) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, channelResponse{
-		ChannelID: c.ChannelID.String(),
-		Name:      c.Name,
-		Region:    a.cfg.Region,
+		ChannelID:  c.ChannelID.String(),
+		Name:       c.Name,
+		Region:     a.cfg.Region,
+		Visibility: c.Visibility,
+		Custom:     c.Custom,
+	})
+}
+
+// handleJoinChannel lets any app user self-join a PUBLIC channel (POST
+// /channels/{id}/join). Private channels reject the request — a member must add
+// them via POST /channels/{id}/members instead. Idempotent.
+func (a *App) handleJoinChannel(w http.ResponseWriter, r *http.Request) {
+	identity, _ := identityFromContext(r.Context())
+	channelID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	ch, err := a.channelsRepo.Get(r.Context(), channelID)
+	if err != nil || ch.AppID != identity.AppID {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	if ch.Visibility != channels.VisibilityPublic {
+		writeError(w, http.StatusForbidden, "this channel is private; ask a member to add you")
+		return
+	}
+	if err := a.channelsRepo.JoinPublic(r.Context(), channelID, identity.UserID); err != nil {
+		a.log.Error("join public channel", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to join channel")
+		return
+	}
+	_ = a.membershipCache.AddMember(r.Context(), channelID, identity.UserID)
+	writeJSON(w, http.StatusOK, map[string]string{"channel_id": channelID.String(), "status": "joined"})
+}
+
+type updateChannelRequest struct {
+	Visibility *string         `json:"visibility,omitempty"`
+	Custom     json.RawMessage `json:"custom,omitempty"`
+}
+
+// handleUpdateChannel lets a channel's creator change its visibility
+// (PATCH /channels/{id}).
+func (a *App) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
+	identity, _ := identityFromContext(r.Context())
+	channelID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	var req updateChannelRequest
+	if !readJSON(w, r, &req) {
+		return
+	}
+	ch, err := a.channelsRepo.Get(r.Context(), channelID)
+	if err != nil || ch.AppID != identity.AppID {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	if ch.CreatedBy != identity.UserID {
+		writeError(w, http.StatusForbidden, "only the channel creator can change it")
+		return
+	}
+	if req.Visibility != nil {
+		if *req.Visibility != channels.VisibilityPublic && *req.Visibility != channels.VisibilityPrivate {
+			writeError(w, http.StatusBadRequest, "visibility must be 'public' or 'private'")
+			return
+		}
+		if err := a.channelsRepo.SetVisibility(r.Context(), channelID, *req.Visibility); err != nil {
+			a.log.Error("set visibility", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update channel")
+			return
+		}
+		ch.Visibility = *req.Visibility
+	}
+	writeJSON(w, http.StatusOK, channelResponse{
+		ChannelID:  ch.ChannelID.String(),
+		Name:       ch.Name,
+		Region:     a.cfg.Region,
+		Visibility: ch.Visibility,
+		Custom:     ch.Custom,
 	})
 }
 

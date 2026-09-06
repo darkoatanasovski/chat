@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -174,6 +175,10 @@ type Message struct {
 	// Location is nil unless this message shared a location — the
 	// "location_sharing" capability.
 	Location *Location
+	// Custom is app-defined JSON metadata (migrations/cell/0002) set on send
+	// via the API/SDK, delivered inline, and searchable (GIN index). Defaults
+	// to {} — never nil on a row read back.
+	Custom json.RawMessage
 	// Status is StatusSent (the default, immediately visible to every
 	// member) or StatusPending (visible only to its own sender until an
 	// app-side moderator approves it) — see the "pending_messages"
@@ -213,9 +218,12 @@ func NewRepo() *Repo {
 // '[]'). location is nil for no shared location. status is StatusSent
 // unless the caller (having already checked the app's pending_messages
 // capability) passes StatusPending.
-func (r *Repo) Send(ctx context.Context, pool *pgxpool.Pool, channelID, senderID, clientMessageID uuid.UUID, body string, parentID *uuid.UUID, maxDepth int, pollID *uuid.UUID, quotedMessageID *uuid.UUID, attachments []Attachment, location *Location, status string) (msg Message, created bool, err error) {
+func (r *Repo) Send(ctx context.Context, pool *pgxpool.Pool, channelID, senderID, clientMessageID uuid.UUID, body string, parentID *uuid.UUID, maxDepth int, pollID *uuid.UUID, quotedMessageID *uuid.UUID, attachments []Attachment, location *Location, status string, custom json.RawMessage) (msg Message, created bool, err error) {
 	if attachments == nil {
 		attachments = []Attachment{}
+	}
+	if len(custom) == 0 {
+		custom = json.RawMessage("{}")
 	}
 	if status == "" {
 		status = StatusSent
@@ -272,9 +280,9 @@ func (r *Repo) Send(ctx context.Context, pool *pgxpool.Pool, channelID, senderID
 	}
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO messages (channel_id, sequence, message_id, sender_id, client_message_id, body, parent_id, poll_id, created_at, quoted_message_id, attachments, location, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-	`, channelID, sequence, messageID, senderID, clientMessageID, body, parentID, pollID, now, quotedMessageID, attachmentsJSON, locationJSON, status); err != nil {
+		INSERT INTO messages (channel_id, sequence, message_id, sender_id, client_message_id, body, parent_id, poll_id, created_at, quoted_message_id, attachments, location, status, custom)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+	`, channelID, sequence, messageID, senderID, clientMessageID, body, parentID, pollID, now, quotedMessageID, attachmentsJSON, locationJSON, status, custom); err != nil {
 		if isUniqueViolation(err) {
 			// Lost a race against a concurrent retry with the same
 			// client_message_id: someone else already committed it.
@@ -330,6 +338,7 @@ func (r *Repo) Send(ctx context.Context, pool *pgxpool.Pool, channelID, senderID
 			ParentReplyCount: parentReplyCount,
 			PollID:           pollID,
 			Attachments:      eventAttachments(attachments),
+			Custom:           custom,
 			CreatedAt:        now,
 		}
 		if err := events.InsertOutbox(ctx, tx, events.TopicMessageCreated, channelID, payload); err != nil {
@@ -358,6 +367,7 @@ func (r *Repo) Send(ctx context.Context, pool *pgxpool.Pool, channelID, senderID
 		Attachments:     attachments,
 		Location:        location,
 		Status:          status,
+		Custom:          custom,
 	}, true, nil
 }
 
@@ -434,7 +444,7 @@ func (r *Repo) Edit(ctx context.Context, pool *pgxpool.Pool, channelID, messageI
 	defer tx.Rollback(ctx)
 
 	var m Message
-	var countsRaw, latestRaw, attachmentsRaw, linkPreviewRaw, locationRaw []byte
+	var countsRaw, latestRaw, attachmentsRaw, linkPreviewRaw, locationRaw, customRaw []byte
 	// sender_id is filtered again here, not just relied on from the check
 	// above — a defense-in-depth guard against a TOCTOU race, even though
 	// nothing in this codebase can currently change a message's sender_id
@@ -445,7 +455,7 @@ func (r *Repo) Edit(ctx context.Context, pool *pgxpool.Pool, channelID, messageI
 		RETURNING `+messageColumns+`
 	`, newBody, now, channelID, messageID, editorID).Scan(
 		&m.ChannelID, &m.Sequence, &m.MessageID, &m.SenderID, &m.ClientMessageID, &m.Body, &m.ParentID, &m.ReplyCount, &m.PollID, &m.CreatedAt, &m.EditedAt, &countsRaw, &latestRaw, &m.PinnedAt, &m.PinnedBy,
-		&m.QuotedMessageID, &attachmentsRaw, &linkPreviewRaw, &locationRaw, &m.Status,
+		&m.QuotedMessageID, &attachmentsRaw, &linkPreviewRaw, &locationRaw, &m.Status, &customRaw,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -456,7 +466,7 @@ func (r *Repo) Edit(ctx context.Context, pool *pgxpool.Pool, channelID, messageI
 	if err := unmarshalReactionState(&m, countsRaw, latestRaw); err != nil {
 		return Message{}, err
 	}
-	if err := unmarshalMessageExtras(&m, attachmentsRaw, linkPreviewRaw, locationRaw); err != nil {
+	if err := unmarshalMessageExtras(&m, attachmentsRaw, linkPreviewRaw, locationRaw, customRaw); err != nil {
 		return Message{}, err
 	}
 
@@ -495,14 +505,21 @@ func (r *Repo) Edit(ctx context.Context, pool *pgxpool.Pool, channelID, messageI
 // ILIKE is enough to make the capability genuinely usable. No cursor
 // pagination the way ListBefore has, matching ListPinned's precedent: a
 // bounded limit is enough for a feature that isn't the primary read path.
-func (r *Repo) Search(ctx context.Context, pool *pgxpool.Pool, channelID uuid.UUID, query string, limit int) ([]Message, error) {
-	rows, err := pool.Query(ctx, `
-		SELECT `+messageColumns+`
-		FROM messages
-		WHERE channel_id = $1 AND body ILIKE '%' || $2 || '%'
-		ORDER BY sequence DESC
-		LIMIT $3
-	`, channelID, query, limit)
+func (r *Repo) Search(ctx context.Context, pool *pgxpool.Pool, channelID uuid.UUID, query string, customFilter json.RawMessage, limit int) ([]Message, error) {
+	conds := []string{"channel_id = $1"}
+	args := []any{channelID}
+	if query != "" {
+		args = append(args, query)
+		conds = append(conds, fmt.Sprintf("body_tsv @@ websearch_to_tsquery('simple', $%d)", len(args)))
+	}
+	if len(customFilter) > 0 {
+		args = append(args, customFilter)
+		conds = append(conds, fmt.Sprintf("custom @> $%d", len(args)))
+	}
+	args = append(args, limit)
+	sql := "SELECT " + messageColumns + " FROM messages WHERE " + strings.Join(conds, " AND ") +
+		" ORDER BY sequence DESC LIMIT $" + fmt.Sprint(len(args))
+	rows, err := pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("messages: search: %w", err)
 	}
@@ -513,6 +530,49 @@ func (r *Repo) Search(ctx context.Context, pool *pgxpool.Pool, channelID uuid.UU
 		m, err := scanMessageRow(rows)
 		if err != nil {
 			return nil, fmt.Errorf("messages: scan search result: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// SearchApp searches messages across every channel in appID that userID may
+// see — public channels plus channels they belong to — by full-text body and/or
+// a custom-field containment filter. Newest first, capped at limit. Backs the
+// cross-channel search endpoint.
+func (r *Repo) SearchApp(ctx context.Context, pool *pgxpool.Pool, appID int64, userID uuid.UUID, query string, customFilter json.RawMessage, limit int) ([]Message, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	conds := []string{
+		"c.app_id = $1",
+		"(c.visibility = 'public' OR EXISTS (SELECT 1 FROM channel_members cm WHERE cm.channel_id = m.channel_id AND cm.user_id = $2))",
+		"m.status = 'sent'",
+	}
+	args := []any{appID, userID}
+	if query != "" {
+		args = append(args, query)
+		conds = append(conds, fmt.Sprintf("m.body_tsv @@ websearch_to_tsquery('simple', $%d)", len(args)))
+	}
+	if len(customFilter) > 0 {
+		args = append(args, customFilter)
+		conds = append(conds, fmt.Sprintf("m.custom @> $%d", len(args)))
+	}
+	args = append(args, limit)
+	prefixed := "m." + strings.ReplaceAll(messageColumns, ", ", ", m.")
+	sql := "SELECT " + prefixed + " FROM messages m JOIN channels c ON c.channel_id = m.channel_id WHERE " +
+		strings.Join(conds, " AND ") + " ORDER BY m.created_at DESC LIMIT $" + fmt.Sprint(len(args))
+	rows, err := pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("messages: search app: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Message
+	for rows.Next() {
+		m, err := scanMessageRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("messages: scan search app result: %w", err)
 		}
 		out = append(out, m)
 	}
@@ -673,14 +733,14 @@ func (r *Repo) SetLinkPreview(ctx context.Context, pool *pgxpool.Pool, channelID
 // (Pin/Unpin/ListPinned/getByMessageID all need it) rather than duplicated
 // a fourth and fifth time the way Edit/getByClientMessageID/ListBefore's
 // pre-existing copies already are.
-const messageColumns = "channel_id, sequence, message_id, sender_id, client_message_id, body, parent_id, reply_count, poll_id, created_at, edited_at, reaction_counts, latest_reactions, pinned_at, pinned_by, quoted_message_id, attachments, link_preview, location, status"
+const messageColumns = "channel_id, sequence, message_id, sender_id, client_message_id, body, parent_id, reply_count, poll_id, created_at, edited_at, reaction_counts, latest_reactions, pinned_at, pinned_by, quoted_message_id, attachments, link_preview, location, status, custom"
 
 func scanMessageRow(row pgx.Row) (Message, error) {
 	var m Message
-	var countsRaw, latestRaw, attachmentsRaw, linkPreviewRaw, locationRaw []byte
+	var countsRaw, latestRaw, attachmentsRaw, linkPreviewRaw, locationRaw, customRaw []byte
 	err := row.Scan(
 		&m.ChannelID, &m.Sequence, &m.MessageID, &m.SenderID, &m.ClientMessageID, &m.Body, &m.ParentID, &m.ReplyCount, &m.PollID, &m.CreatedAt, &m.EditedAt, &countsRaw, &latestRaw, &m.PinnedAt, &m.PinnedBy,
-		&m.QuotedMessageID, &attachmentsRaw, &linkPreviewRaw, &locationRaw, &m.Status,
+		&m.QuotedMessageID, &attachmentsRaw, &linkPreviewRaw, &locationRaw, &m.Status, &customRaw,
 	)
 	if err != nil {
 		return Message{}, err
@@ -688,7 +748,7 @@ func scanMessageRow(row pgx.Row) (Message, error) {
 	if err := unmarshalReactionState(&m, countsRaw, latestRaw); err != nil {
 		return Message{}, err
 	}
-	if err := unmarshalMessageExtras(&m, attachmentsRaw, linkPreviewRaw, locationRaw); err != nil {
+	if err := unmarshalMessageExtras(&m, attachmentsRaw, linkPreviewRaw, locationRaw, customRaw); err != nil {
 		return Message{}, err
 	}
 	return m, nil
@@ -862,13 +922,13 @@ func (r *Repo) ListPinned(ctx context.Context, pool *pgxpool.Pool, channelID uui
 
 func (r *Repo) getByClientMessageID(ctx context.Context, pool *pgxpool.Pool, channelID, clientMessageID uuid.UUID) (Message, bool, error) {
 	var m Message
-	var countsRaw, latestRaw, attachmentsRaw, linkPreviewRaw, locationRaw []byte
+	var countsRaw, latestRaw, attachmentsRaw, linkPreviewRaw, locationRaw, customRaw []byte
 	err := pool.QueryRow(ctx, `
 		SELECT `+messageColumns+`
 		FROM messages WHERE channel_id = $1 AND client_message_id = $2
 	`, channelID, clientMessageID).Scan(
 		&m.ChannelID, &m.Sequence, &m.MessageID, &m.SenderID, &m.ClientMessageID, &m.Body, &m.ParentID, &m.ReplyCount, &m.PollID, &m.CreatedAt, &m.EditedAt, &countsRaw, &latestRaw, &m.PinnedAt, &m.PinnedBy,
-		&m.QuotedMessageID, &attachmentsRaw, &linkPreviewRaw, &locationRaw, &m.Status,
+		&m.QuotedMessageID, &attachmentsRaw, &linkPreviewRaw, &locationRaw, &m.Status, &customRaw,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -879,7 +939,7 @@ func (r *Repo) getByClientMessageID(ctx context.Context, pool *pgxpool.Pool, cha
 	if err := unmarshalReactionState(&m, countsRaw, latestRaw); err != nil {
 		return Message{}, false, err
 	}
-	if err := unmarshalMessageExtras(&m, attachmentsRaw, linkPreviewRaw, locationRaw); err != nil {
+	if err := unmarshalMessageExtras(&m, attachmentsRaw, linkPreviewRaw, locationRaw, customRaw); err != nil {
 		return Message{}, false, err
 	}
 	return m, true, nil
@@ -918,15 +978,15 @@ func (r *Repo) ListBefore(ctx context.Context, pool *pgxpool.Pool, channelID uui
 	var out []Message
 	for rows.Next() {
 		var m Message
-		var countsRaw, latestRaw, attachmentsRaw, linkPreviewRaw, locationRaw []byte
+		var countsRaw, latestRaw, attachmentsRaw, linkPreviewRaw, locationRaw, customRaw []byte
 		if err := rows.Scan(&m.ChannelID, &m.Sequence, &m.MessageID, &m.SenderID, &m.ClientMessageID, &m.Body, &m.ParentID, &m.ReplyCount, &m.PollID, &m.CreatedAt, &m.EditedAt, &countsRaw, &latestRaw, &m.PinnedAt, &m.PinnedBy,
-			&m.QuotedMessageID, &attachmentsRaw, &linkPreviewRaw, &locationRaw, &m.Status); err != nil {
+			&m.QuotedMessageID, &attachmentsRaw, &linkPreviewRaw, &locationRaw, &m.Status, &customRaw); err != nil {
 			return nil, fmt.Errorf("messages: scan: %w", err)
 		}
 		if err := unmarshalReactionState(&m, countsRaw, latestRaw); err != nil {
 			return nil, err
 		}
-		if err := unmarshalMessageExtras(&m, attachmentsRaw, linkPreviewRaw, locationRaw); err != nil {
+		if err := unmarshalMessageExtras(&m, attachmentsRaw, linkPreviewRaw, locationRaw, customRaw); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -1052,9 +1112,14 @@ func unmarshalReactionState(m *Message, countsRaw, latestRaw []byte) error {
 // (always valid JSON, defaulting to '[]'); link_preview and location are
 // nullable, so a zero-length scan ([]byte(nil), meaning SQL NULL) leaves
 // the corresponding pointer field nil instead of being unmarshaled.
-func unmarshalMessageExtras(m *Message, attachmentsRaw, linkPreviewRaw, locationRaw []byte) error {
+func unmarshalMessageExtras(m *Message, attachmentsRaw, linkPreviewRaw, locationRaw, customRaw []byte) error {
 	if err := json.Unmarshal(attachmentsRaw, &m.Attachments); err != nil {
 		return fmt.Errorf("messages: unmarshal attachments: %w", err)
+	}
+	if len(customRaw) > 0 {
+		m.Custom = append(json.RawMessage(nil), customRaw...)
+	} else {
+		m.Custom = json.RawMessage("{}")
 	}
 	if len(linkPreviewRaw) > 0 {
 		var lp LinkPreview
