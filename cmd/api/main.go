@@ -24,6 +24,7 @@ import (
 	"github.com/darkoatanasovski/chat/internal/platform/debug"
 	"github.com/darkoatanasovski/chat/internal/platform/logging"
 	"github.com/darkoatanasovski/chat/internal/platform/metrics"
+	"github.com/darkoatanasovski/chat/internal/platform/migrate"
 	"github.com/darkoatanasovski/chat/internal/platform/secretbox"
 	"github.com/darkoatanasovski/chat/internal/polls"
 	"github.com/darkoatanasovski/chat/internal/quota"
@@ -36,6 +37,7 @@ import (
 	redisstorage "github.com/darkoatanasovski/chat/internal/storage/redis"
 	"github.com/darkoatanasovski/chat/internal/translations"
 	"github.com/darkoatanasovski/chat/internal/users"
+	"github.com/darkoatanasovski/chat/migrations"
 )
 
 func Run() {
@@ -60,6 +62,13 @@ func Run() {
 	cellPool, err := pgstorage.Connect(ctx, cfg.CellDSN)
 	if err != nil {
 		log.Error("connect cell db", "shard", cfg.ShardID, "error", err)
+		os.Exit(1)
+	}
+
+	// Apply pending schema migrations on startup (advisory-locked, idempotent).
+	// The data-plane api owns its cell DB's schema; ws/worker never migrate.
+	if err := migrate.Apply(ctx, cellPool, migrations.FS, "cell", "messages", 424201, log); err != nil {
+		log.Error("apply cell migrations", "error", err)
 		os.Exit(1)
 	}
 
