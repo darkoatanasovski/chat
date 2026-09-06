@@ -8,6 +8,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
+# migrations is a Go package (migrations/embed.go) that go:embeds the *.sql
+# files; the api applies them on startup, so it must be in the build context.
+COPY migrations ./migrations
 RUN CGO_ENABLED=0 go build -o /out/chat ./cmd/chat
 
 FROM alpine:3.20
