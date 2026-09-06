@@ -887,57 +887,61 @@ export default function DemoChat() {
                 }
 
                 return (
-                  <div key={m.k ?? m.message_id} className="demo-msg-in group flex items-end gap-2">
-                    <Avatar name={names[m.sender_id] || "Someone"} />
-                    <div className="flex max-w-[80%] flex-col items-start">
-                      <span
-                        className="mb-1 pl-1 text-[11px] font-medium"
-                        style={{ color: `hsl(${hueFor(names[m.sender_id] || m.sender_id)} 60% 62%)` }}
-                      >
-                        {names[m.sender_id] || "Someone"}
-                      </span>
-                      {hasCaption(m) && (
-                        <div className="whitespace-pre-wrap break-words rounded-2xl rounded-bl-md bg-surface-2 px-3.5 py-2 text-[13px] leading-snug text-text">
-                          {linkify(m.body)}
-                        </div>
-                      )}
-                      {m.attachments?.map((a, i) => (
-                        <AttachmentView key={i} a={a} mine={false} />
-                      ))}
-                      {m.link_preview && <LinkPreviewCard p={m.link_preview} />}
-                      <div className="mt-1 flex items-center gap-1.5 pl-1">
-                        {reactionPills.length > 0 && (
-                          <span className="inline-flex items-center gap-1">
-                            {reactionPills.map(([k, c]) => (
-                              <button
-                                key={k}
-                                onClick={() => toggleReaction(m, k)}
-                                className={`inline-flex items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[11px] ${
-                                  myReacted(m, k)
-                                    ? "border-accent/50 bg-accent-soft text-text"
-                                    : "border-border bg-bg text-text-muted"
-                                }`}
-                              >
-                                <span className="text-[12px] leading-none">{glyph(k)}</span> {c}
-                              </button>
-                            ))}
-                          </span>
+                  <div key={m.k ?? m.message_id} className="demo-msg-in group flex flex-col items-start">
+                    {/* avatar aligns to the BOTTOM of the bubble, not the timestamp row */}
+                    <div className="flex items-end gap-2">
+                      <Avatar name={names[m.sender_id] || "Someone"} />
+                      <div className="flex max-w-[80%] flex-col items-start">
+                        <span
+                          className="mb-1 pl-1 text-[11px] font-medium"
+                          style={{ color: `hsl(${hueFor(names[m.sender_id] || m.sender_id)} 60% 62%)` }}
+                        >
+                          {names[m.sender_id] || "Someone"}
+                        </span>
+                        {hasCaption(m) && (
+                          <div className="whitespace-pre-wrap break-words rounded-2xl rounded-bl-md bg-surface-2 px-3.5 py-2 text-[13px] leading-snug text-text">
+                            {linkify(m.body)}
+                          </div>
                         )}
-                        {m.edited_at && <span className="text-[10px] text-text-faint">edited</span>}
-                        <span className="text-[10px] text-text-faint">{timeOf(m.created_at)}</span>
+                        {m.attachments?.map((a, i) => (
+                          <AttachmentView key={i} a={a} mine={false} />
+                        ))}
+                        {m.link_preview && <LinkPreviewCard p={m.link_preview} />}
+                      </div>
+                      <div className="flex gap-0.5 self-center opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+                        {REACTIONS.map((r) => (
+                          <button
+                            key={r.key}
+                            onClick={() => toggleReaction(m, r.key)}
+                            title={r.key}
+                            className="rounded px-1 text-xs transition-transform duration-150 hover:scale-[1.35]"
+                          >
+                            {r.glyph}
+                          </button>
+                        ))}
                       </div>
                     </div>
-                    <div className="mb-5 flex gap-0.5 self-center opacity-0 transition-opacity duration-150 group-hover:opacity-100">
-                      {REACTIONS.map((r) => (
-                        <button
-                          key={r.key}
-                          onClick={() => toggleReaction(m, r.key)}
-                          title={r.key}
-                          className="rounded px-1 text-xs transition-transform duration-150 hover:scale-[1.35]"
-                        >
-                          {r.glyph}
-                        </button>
-                      ))}
+                    {/* timestamp + reactions BELOW the bubble, offset past the avatar */}
+                    <div className="mt-1 flex items-center gap-1.5 pl-9">
+                      {reactionPills.length > 0 && (
+                        <span className="inline-flex items-center gap-1">
+                          {reactionPills.map(([k, c]) => (
+                            <button
+                              key={k}
+                              onClick={() => toggleReaction(m, k)}
+                              className={`inline-flex items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[11px] ${
+                                myReacted(m, k)
+                                  ? "border-accent/50 bg-accent-soft text-text"
+                                  : "border-border bg-bg text-text-muted"
+                              }`}
+                            >
+                              <span className="text-[12px] leading-none">{glyph(k)}</span> {c}
+                            </button>
+                          ))}
+                        </span>
+                      )}
+                      {m.edited_at && <span className="text-[10px] text-text-faint">edited</span>}
+                      <span className="text-[10px] text-text-faint">{timeOf(m.created_at)}</span>
                     </div>
                   </div>
                 );
