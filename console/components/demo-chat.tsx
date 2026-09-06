@@ -65,7 +65,23 @@ type Message = {
   k?: string; // stable render key for its whole lifecycle (optimistic → reconciled), so it never remounts/re-animates
 };
 
+// Auto-reconnect the chat WebSocket when it drops (idle timeout, network
+// blip, server restart). Default on; set false to disable and stay
+// disconnected until the next manual (re)join.
+const AUTO_RECONNECT = true;
+const RECONNECT_MAX_DELAY = 30000; // cap the exponential backoff at 30s
+
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+
+// mergeHistory folds a freshly re-fetched history page into the current list on
+// reconnect: it keeps everything already on screen (including optimistic sends)
+// and adds only messages missed while disconnected, ordered by sequence.
+function mergeHistory(prev: Message[], fetched: Message[]): Message[] {
+  const have = new Set(prev.map((m) => m.message_id));
+  const additions = fetched.filter((f) => !have.has(f.message_id)).map((f) => ({ ...f, k: f.message_id }));
+  if (additions.length === 0) return prev;
+  return [...prev, ...additions].sort((a, b) => a.sequence - b.sequence);
+}
 // True when a message's body is just our filename placeholder (a file sent
 // with no caption), so we render the attachment alone without a text bubble.
 function hasCaption(m: Message): boolean {
@@ -257,7 +273,7 @@ export default function DemoChat() {
   const [names, setNames] = useState<Record<string, string>>({});
   const [reads, setReads] = useState<Record<string, number>>({}); // userId -> last read sequence
   const [typing, setTyping] = useState<Record<string, boolean>>({});
-  const [status, setStatus] = useState<"connecting" | "open" | "closed">("connecting");
+  const [status, setStatus] = useState<"connecting" | "open" | "closed" | "reconnecting">("connecting");
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState<{ id: string; body: string } | null>(null);
   const [active, setActive] = useState("general");
@@ -409,16 +425,73 @@ export default function DemoChat() {
     };
   }, [session, loadMembers]);
 
-  // WebSocket lifecycle
+  // WebSocket lifecycle with auto-reconnect + gap recovery.
   useEffect(() => {
     if (!session) return;
-    const ws = new WebSocket(`${WS}/connect?token=${encodeURIComponent(session.token)}`);
-    wsRef.current = ws;
-    setStatus("connecting");
-    ws.onopen = () => setStatus("open");
-    ws.onclose = () => setStatus("closed");
-    ws.onerror = () => setStatus("closed");
-    ws.onmessage = (evt) => {
+    const s = session;
+    let stopped = false;
+    let attempts = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    // After a drop, re-fetch recent history + read state and merge in anything
+    // missed while disconnected, without clobbering optimistic sends.
+    const recoverGap = async () => {
+      try {
+        const hist = await fetch(`${API}/channels/${s.channelId}/messages?limit=40`, {
+          headers: { authorization: `Bearer ${s.token}` },
+        });
+        if (hist.ok) {
+          const fetched = ((await hist.json()) as Message[]).slice().reverse();
+          setMessages((prev) => mergeHistory(prev, fetched));
+        }
+        const rs = await fetch(`${API}/channels/${s.channelId}/read-state`, {
+          headers: { authorization: `Bearer ${s.token}` },
+        });
+        if (rs.ok) {
+          const rows: { user_id: string; last_read_sequence: number }[] = await rs.json();
+          setReads((prev) => ({ ...prev, ...Object.fromEntries(rows.map((r) => [r.user_id, r.last_read_sequence])) }));
+        }
+      } catch {
+        /* next reconnect will try again */
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (stopped || !AUTO_RECONNECT) {
+        setStatus("closed");
+        return;
+      }
+      attempts += 1;
+      const delay = Math.min(RECONNECT_MAX_DELAY, 1000 * 2 ** (attempts - 1)) + Math.random() * 500;
+      setStatus("reconnecting");
+      reconnectTimer = setTimeout(connect, delay);
+    };
+
+    function connect() {
+      if (stopped) return;
+      setStatus(attempts === 0 ? "connecting" : "reconnecting");
+      const ws = new WebSocket(`${WS}/connect?token=${encodeURIComponent(s.token)}`);
+      wsRef.current = ws;
+      ws.onopen = () => {
+        const wasReconnect = attempts > 0;
+        attempts = 0;
+        setStatus("open");
+        if (wasReconnect) recoverGap();
+      };
+      ws.onclose = () => {
+        if (!stopped) scheduleReconnect();
+      };
+      ws.onerror = () => {
+        try {
+          ws.close(); // fall through to onclose → reconnect
+        } catch {
+          /* ignore */
+        }
+      };
+      ws.onmessage = onMessage;
+    }
+
+    const onMessage = (evt: MessageEvent) => {
       let f: Record<string, unknown>;
       try {
         f = JSON.parse(evt.data);
@@ -495,7 +568,40 @@ export default function DemoChat() {
         if (!(uid in names)) loadMembers(session);
       }
     };
-    return () => ws.close();
+
+    connect();
+
+    // Reconnect promptly when the tab refocuses or the network returns, rather
+    // than waiting out the backoff.
+    const kick = () => {
+      if (stopped || !AUTO_RECONNECT) return;
+      const ws = wsRef.current;
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      attempts = 0;
+      connect();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") kick();
+    };
+    window.addEventListener("online", kick);
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      stopped = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      window.removeEventListener("online", kick);
+      document.removeEventListener("visibilitychange", onVisible);
+      const ws = wsRef.current;
+      if (ws) {
+        ws.onclose = null; // an intentional teardown must not trigger a reconnect
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
@@ -720,7 +826,7 @@ export default function DemoChat() {
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold">Demo Workspace</div>
             <div className="flex items-center gap-1.5 text-[11px] text-text-muted">
-              <span className={`h-1.5 w-1.5 rounded-full ${status === "open" ? "bg-accent" : "bg-text-faint"}`} />
+              <span className={`h-1.5 w-1.5 rounded-full ${status === "open" ? "bg-accent" : status === "closed" ? "bg-text-faint" : "bg-warning"}`} />
               {status === "open" ? "live" : status}
             </div>
           </div>
@@ -770,7 +876,7 @@ export default function DemoChat() {
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold">{activeChannel.name}</div>
             <div className="flex items-center gap-1.5 text-[11px] text-text-muted">
-              <span className={`h-1.5 w-1.5 rounded-full ${status === "open" ? "bg-accent" : "bg-text-faint"}`} />
+              <span className={`h-1.5 w-1.5 rounded-full ${status === "open" ? "bg-accent" : status === "closed" ? "bg-text-faint" : "bg-warning"}`} />
               {memberCount} {memberCount === 1 ? "member" : "members"}
               {status === "open" ? " · live" : ` · ${status}`}
             </div>
