@@ -207,6 +207,20 @@ select {
   .chat-typing-dot { animation: none; }
 }
 
+/* Live demo message bubbles (components/demo-chat.tsx): a clean fade-in that
+   rises from below — no scale, softer/longer than the hero's chat-msg-in so
+   real incoming messages feel calm rather than poppy. Plays once per element
+   (each message carries a stable key, so it never re-triggers). */
+@keyframes demo-msg-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.demo-msg-in { animation: demo-msg-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .demo-msg-in { animation: none; }
+}
+
 @keyframes chat-ping-ring {
   0% { opacity: 0; transform: scale(0.6); }
   6% { opacity: 0.6; transform: scale(0.9); }

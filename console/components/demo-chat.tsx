@@ -219,7 +219,7 @@ function LinkPreviewCard({ p, onRemove }: { p: LinkPreview; onRemove?: () => voi
       href={p.url}
       target="_blank"
       rel="noreferrer"
-      className="chat-item group/lp relative mt-1 block max-w-[18rem] overflow-hidden rounded-xl border border-border bg-bg transition-colors hover:border-accent"
+      className="demo-msg-in group/lp relative mt-1 block max-w-[18rem] overflow-hidden rounded-xl border border-border bg-bg transition-colors hover:border-accent"
     >
       {p.image_url && (
         // eslint-disable-next-line @next/next/no-img-element
@@ -810,7 +810,7 @@ export default function DemoChat() {
 
                 if (mine) {
                   return (
-                    <div key={m.k ?? m.message_id} className="chat-item group flex flex-col items-end">
+                    <div key={m.k ?? m.message_id} className="demo-msg-in group flex flex-col items-end">
                       {editing?.id === m.message_id ? (
                         <div className="flex w-full max-w-[80%] items-center gap-2">
                           <input
@@ -887,7 +887,7 @@ export default function DemoChat() {
                 }
 
                 return (
-                  <div key={m.k ?? m.message_id} className="chat-item group flex items-end gap-2">
+                  <div key={m.k ?? m.message_id} className="demo-msg-in group flex items-end gap-2">
                     <Avatar name={names[m.sender_id] || "Someone"} />
                     <div className="flex max-w-[80%] flex-col items-start">
                       <span
