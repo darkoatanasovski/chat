@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, CheckCheck, Hash, Plus, SendHorizontal, Smile } from "lucide-react";
+import { Check, CheckCheck, Hash, Pencil, Plus, SendHorizontal, Smile } from "lucide-react";
 
 // Live chat demo for the landing page. A visitor picks a username, the server
 // route (/api/demo/session) mints them an end-user in the ENTERPRISE demo app
@@ -24,6 +24,14 @@ const REACTIONS: { key: string; glyph: string }[] = [
   { key: "rocket", glyph: "🚀" },
 ];
 const glyph = (k: string) => REACTIONS.find((r) => r.key === k)?.glyph ?? k;
+
+// Composer emoji picker — a broad, common set inserted into the draft.
+const EMOJI_PICKER = [
+  "😀", "😁", "😂", "🤣", "😊", "😍", "😎", "🤔",
+  "👍", "👎", "🙏", "👏", "🙌", "🔥", "🎉", "💯",
+  "❤️", "🧡", "💛", "💚", "💙", "💜", "✅", "❌",
+  "⭐", "✨", "🚀", "👀", "😢", "😅", "🤝", "💡",
+];
 
 // The live demo runs in one shared channel; the rest of the list is here so
 // the window reads like a real multi-channel workspace. Selecting a non-live
@@ -147,9 +155,12 @@ export default function DemoChat() {
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState<{ id: string; body: string } | null>(null);
   const [active, setActive] = useState("general");
+  const [emojiOpen, setEmojiOpen] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const draftRef = useRef<HTMLInputElement | null>(null);
+  const emojiRef = useRef<HTMLDivElement | null>(null);
   const typingSentAt = useRef(0);
   const typingStopTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingClear = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -378,6 +389,22 @@ export default function DemoChat() {
     if (session && messages.length) markRead();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, typing]);
+
+  // close the emoji picker on an outside click
+  useEffect(() => {
+    if (!emojiOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (emojiRef.current && !emojiRef.current.contains(e.target as Node)) setEmojiOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [emojiOpen]);
+
+  function insertEmoji(e: string) {
+    setDraft((d) => d + e);
+    setEmojiOpen(false);
+    draftRef.current?.focus();
+  }
 
   function sendTyping(start: boolean) {
     const ws = wsRef.current;
@@ -634,9 +661,9 @@ export default function DemoChat() {
                         {editable && (
                           <button
                             onClick={() => setEditing({ id: m.message_id, body: m.body })}
-                            className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-text"
+                            className="inline-flex items-center gap-0.5 text-text-faint transition-colors hover:text-accent"
                           >
-                            edit
+                            <Pencil className="h-2.5 w-2.5" /> edit
                           </button>
                         )}
                         {m.edited_at && <span>edited</span>}
@@ -660,13 +687,13 @@ export default function DemoChat() {
                           ))}
                         </div>
                       )}
-                      <div className="mt-0.5 hidden gap-0.5 group-hover:flex">
+                      <div className="mt-0.5 flex gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
                         {REACTIONS.map((r) => (
                           <button
                             key={r.key}
                             onClick={() => toggleReaction(m, r.key)}
                             title={r.key}
-                            className="rounded px-1 text-xs opacity-70 hover:opacity-100"
+                            className="rounded px-1 text-xs transition-transform duration-150 hover:scale-[1.35]"
                           >
                             {r.glyph}
                           </button>
@@ -711,13 +738,13 @@ export default function DemoChat() {
                         <span className="text-[10px] text-text-faint">{timeOf(m.created_at)}</span>
                       </div>
                     </div>
-                    <div className="mb-5 hidden gap-0.5 self-center group-hover:flex">
+                    <div className="mb-5 flex gap-0.5 self-center opacity-0 transition-opacity duration-150 group-hover:opacity-100">
                       {REACTIONS.map((r) => (
                         <button
                           key={r.key}
                           onClick={() => toggleReaction(m, r.key)}
                           title={r.key}
-                          className="rounded px-1 text-xs opacity-70 hover:opacity-100"
+                          className="rounded px-1 text-xs transition-transform duration-150 hover:scale-[1.35]"
                         >
                           {r.glyph}
                         </button>
@@ -754,13 +781,39 @@ export default function DemoChat() {
               </button>
               <div className="flex flex-1 items-center gap-2 rounded-full border border-border bg-bg px-3.5 py-2 focus-within:border-accent">
                 <input
+                  ref={draftRef}
                   value={draft}
                   onChange={(e) => onDraftChange(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && send()}
                   placeholder={`Message #${activeChannel.name}`}
                   className="flex-1 bg-transparent text-[13px] text-text outline-none placeholder:text-text-faint"
                 />
-                <Smile className="h-[17px] w-[17px] shrink-0 text-text-faint" />
+                <div ref={emojiRef} className="relative shrink-0">
+                  <button
+                    type="button"
+                    aria-label="Emoji"
+                    onClick={() => setEmojiOpen((o) => !o)}
+                    className={`grid place-items-center transition-colors ${emojiOpen ? "text-accent" : "text-text-faint hover:text-text"}`}
+                  >
+                    <Smile className="h-[17px] w-[17px]" />
+                  </button>
+                  {emojiOpen && (
+                    <div className="absolute bottom-8 right-0 z-20 w-60 rounded-xl border border-border bg-surface p-2 shadow-2xl">
+                      <div className="grid grid-cols-8 gap-0.5">
+                        {EMOJI_PICKER.map((e) => (
+                          <button
+                            key={e}
+                            type="button"
+                            onClick={() => insertEmoji(e)}
+                            className="rounded-md py-1 text-base transition-transform duration-150 hover:scale-125 hover:bg-surface-2"
+                          >
+                            {e}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
               <button
                 onClick={send}
