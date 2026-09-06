@@ -55,6 +55,35 @@ type Session = { token: string; userId: string; displayName: string; channelId: 
 
 const uuid = () => crypto.randomUUID();
 
+// The visitor's minted session survives a page refresh so they come back as
+// the same user; "leave" clears it. Wrapped in try/catch because storage can
+// throw (private mode, storage disabled).
+const STORAGE_KEY = "chat-demo-session";
+function persistSession(s: Session) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+  } catch {
+    /* ignore — session just won't survive refresh */
+  }
+}
+function readStoredSession(): Session | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw) as Session;
+    return s?.token && s?.userId && s?.channelId ? s : null;
+  } catch {
+    return null;
+  }
+}
+function clearStoredSession() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 // Stable per-name hue so each participant keeps the same avatar colour, the
 // same treatment the hero mockup uses.
 function hueFor(seed: string): number {
@@ -184,33 +213,82 @@ export default function DemoChat() {
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || "could not join");
       const s: Session = data;
-      setSession(s);
+      persistSession(s);
       setActive("general");
-      setNames((p) => ({ ...p, [s.userId]: s.displayName }));
-      // recent history
-      const hist = await fetch(`${API}/channels/${s.channelId}/messages?limit=40`, {
-        headers: { authorization: `Bearer ${s.token}` },
-      });
-      if (hist.ok) setMessages(((await hist.json()) as Message[]).slice().reverse());
-      await loadMembers(s);
-      // seed read watermarks so historical ticks are accurate
-      try {
-        const rs = await fetch(`${API}/channels/${s.channelId}/read-state`, {
-          headers: { authorization: `Bearer ${s.token}` },
-        });
-        if (rs.ok) {
-          const rows: { user_id: string; last_read_sequence: number }[] = await rs.json();
-          setReads(Object.fromEntries(rows.map((row) => [row.user_id, row.last_read_sequence])));
-        }
-      } catch {
-        /* ticks just stay "delivered" */
-      }
+      setSession(s); // the hydrate effect below loads history/members/read-state
     } catch (e) {
       setError(e instanceof Error ? e.message : "could not join");
     } finally {
       setJoining(false);
     }
   }
+
+  function leave() {
+    clearStoredSession();
+    setSession(null);
+    setMessages([]);
+    setNames({});
+    setReads({});
+    setTyping({});
+    setEditing(null);
+    setDraft("");
+    setUsername("");
+    setError(null);
+  }
+
+  // Restore a stored session on first mount so a refresh keeps the same user.
+  useEffect(() => {
+    const s = readStoredSession();
+    if (s) {
+      setActive("general");
+      setNames((p) => ({ ...p, [s.userId]: s.displayName }));
+      setSession(s);
+    }
+  }, []);
+
+  // Whenever we have a session (fresh join or restored from storage), load its
+  // history, members, and read watermarks. A stale/expired stored token surface
+  // as a 401/403 here — clear it and drop back to the join screen.
+  useEffect(() => {
+    if (!session) return;
+    const s = session;
+    let cancelled = false;
+    (async () => {
+      try {
+        const hist = await fetch(`${API}/channels/${s.channelId}/messages?limit=40`, {
+          headers: { authorization: `Bearer ${s.token}` },
+        });
+        if (hist.status === 401 || hist.status === 403) {
+          if (!cancelled) {
+            clearStoredSession();
+            setSession(null);
+          }
+          return;
+        }
+        if (hist.ok && !cancelled) {
+          setMessages(((await hist.json()) as Message[]).slice().reverse());
+        }
+      } catch {
+        /* offline / transient — WS reconnect + next load will recover */
+      }
+      if (cancelled) return;
+      await loadMembers(s);
+      try {
+        const rs = await fetch(`${API}/channels/${s.channelId}/read-state`, {
+          headers: { authorization: `Bearer ${s.token}` },
+        });
+        if (rs.ok && !cancelled) {
+          const rows: { user_id: string; last_read_sequence: number }[] = await rs.json();
+          setReads(Object.fromEntries(rows.map((row) => [row.user_id, row.last_read_sequence])));
+        }
+      } catch {
+        /* ticks just stay "delivered" */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [session, loadMembers]);
 
   // WebSocket lifecycle
   useEffect(() => {
@@ -477,7 +555,7 @@ export default function DemoChat() {
             <div className="text-[10px] text-text-faint">you</div>
           </div>
           <button
-            onClick={() => setSession(null)}
+            onClick={leave}
             className="rounded px-1.5 py-1 text-[11px] text-text-faint hover:text-text"
           >
             leave
@@ -498,7 +576,7 @@ export default function DemoChat() {
             </div>
           </div>
           <button
-            onClick={() => setSession(null)}
+            onClick={leave}
             className="text-xs text-text-faint hover:text-text sm:hidden"
           >
             leave
